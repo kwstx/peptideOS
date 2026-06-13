@@ -6,6 +6,7 @@ import random
 import numpy as np
 from confluent_kafka import Consumer, KafkaError
 import psycopg2
+from structure_prediction import run_structure_prediction_pipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("simulation-service")
@@ -162,6 +163,11 @@ def main():
                 
                 logger.info(f"Received designed peptide for {design_id}: '{sequence}'. Starting digital twin simulation.")
                 
+                # 0. Automated Structure Prediction and Interaction Validation
+                descriptors = run_structure_prediction_pipeline(sequence, design_id)
+                logger.info(f"[{design_id}] Quantitative descriptors feed forward into downstream simulation stages.")
+                time.sleep(1.0)
+
                 # 1. Simulate Graph Network Propagation (Perturbation evaluation)
                 logger.info(f"[{design_id}] Propagating protein-protein interaction network dynamics...")
                 time.sleep(1.0)
