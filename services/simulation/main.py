@@ -7,6 +7,7 @@ import numpy as np
 from confluent_kafka import Consumer, KafkaError
 import psycopg2
 from structure_prediction import run_structure_prediction_pipeline
+from digital_twin import DigitalTwinSandbox
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("simulation-service")
@@ -178,10 +179,21 @@ def main():
                 logger.info(f"[{design_id}] Langevin simulation finished. Potential energy: {final_pot_energy:.4f} kcal/mol")
                 time.sleep(1.0)
                 
-                # 3. Solve SDEs for cellular phenotypes
-                logger.info(f"[{design_id}] Solving stochastic differential equations for signal cascades...")
-                deficit_recovery = solve_stochastic_differential_equations()
-                logger.info(f"[{design_id}] SDE solver resolved. Final mitochondrial tagging deficit: {deficit_recovery:.4f}")
+                # 3. Digital Twin Sandbox Integration
+                logger.info(f"[{design_id}] Instantiating Digital Twin Sandbox...")
+                sandbox = DigitalTwinSandbox()
+                
+                disease_context = {"id": f"ctx_{design_id}", "targets": ["mTOR", "MAPK", "JAK-STAT"]}
+                omics_data = {"layers": ["genomics", "transcriptomics", "proteomics"], "features": {"mTOR": 1.0}}
+                
+                sandbox.ingest_context_and_build(disease_context, omics_data)
+                
+                # Propagate peptide perturbations
+                descriptors["free_energy"] = float(-abs(final_pot_energy) * 0.1) # augment descriptors with physics
+                recovery_score = sandbox.simulate_peptide(sequence, descriptors)
+                
+                logger.info(f"[{design_id}] Digital Twin simulation resolved. Deficit recovery score: {recovery_score:.4f}")
+                deficit_recovery = 1.0 - recovery_score # for compatibility with existing stability calculation
                 time.sleep(1.0)
                 
                 # Calculate scores based on the physical simulations
