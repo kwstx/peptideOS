@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # Metadata Relational Store
+  postgres:
+    image: postgres:15-alpine
+    container_name: peptiprompt-postgres
+    environment:
+      POSTGRES_DB: peptiprompt
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Apache Kafka Event Streaming decoupled broker
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: peptiprompt-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: peptiprompt-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  # PeptiPrompt API Gateway
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: peptiprompt-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  # Generative AI Diffusion Service
+  diffusion:
+    build:
+      context: ./services/diffusion
+      dockerfile: Dockerfile
+    container_name: peptiprompt-diffusion
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      - kafka
+
+  # Digital Twin Simulation Sandbox Service
+  simulation:
+    build:
+      context: ./services/simulation
+      dockerfile: Dockerfile
+    container_name: peptiprompt-simulation
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  # Pathway Graph Query Service
+  pathway:
+    build:
+      context: ./services/pathway
+      dockerfile: Dockerfile
+    container_name: peptiprompt-pathway
+    ports:
+      - "8002:8002"
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+
+  # Vector Search Service
+  vector-search:
+    build:
+      context: ./services/vector_search
+      dockerfile: Dockerfile
+    container_name: peptiprompt-vector-search
+    ports:
+      - "8003:8003"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+
+volumes:
+  pgdata:

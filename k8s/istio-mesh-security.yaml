@@ -1,0 +1,95 @@
+# Enable strict mTLS across all microservices in the namespace
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: peptiprompt
+spec:
+  mtls:
+    mode: STRICT
+---
+# Destination Rule & Circuit Breaker for Pathway Service
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: pathway-service-cb
+  namespace: peptiprompt
+spec:
+  host: pathway-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL # Force mTLS tunnel
+    connectionPool:
+      tcp:
+        maxConnections: 100 # Maximum open TCP connections
+      http:
+        http1MaxPendingRequests: 10 # Max pending requests before queueing
+        maxRequestsPerConnection: 10 # Max requests per connection to prevent resource exhaustion
+    outlierDetection:
+      consecutive5xxErrors: 3 # Break circuit after 3 consecutive failures
+      interval: 10s # Check interval
+      baseEjectionTime: 30s # Time to keep pod ejected from routing
+      maxEjectionPercent: 50 # Eject max 50% of available replicas
+---
+# Destination Rule & Circuit Breaker for Vector Search Service
+apiVersion: networking.istio.io/v1alpha3
+kind: DestinationRule
+metadata:
+  name: vector-search-service-cb
+  namespace: peptiprompt
+spec:
+  host: vector-search-service
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+---
+# VirtualService routing and timeout policies for Gateway Service
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: gateway-service-route
+  namespace: peptiprompt
+spec:
+  hosts:
+  - "peptiprompt.enterprise.io"
+  gateways:
+  - gateway-ingress
+  http:
+  - route:
+    - destination:
+        host: gateway-service
+        port:
+          number: 8000
+    timeout: 30s # 30-second absolute timeout for cellular digital twins
+    retries:
+      attempts: 3 # Retry failed requests 3 times
+      perTryTimeout: 5s # 5-second per-retry timeout
+      retryOn: "5xx,connect-failure,refused-stream"
+---
+# VirtualService routing and fault injection/retries for Pathway Service
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: pathway-service-route
+  namespace: peptiprompt
+spec:
+  hosts:
+  - pathway-service
+  http:
+  - route:
+    - destination:
+        host: pathway-service
+    retries:
+      attempts: 2
+      perTryTimeout: 2s
