@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: synthetic-omics-datasets
+  namespace: peptiprompt-validation
+data:
+  # Synthetic multi-omics abundances and disease context
+  mitophagy-omics.json: |
+    {
+      "layers": ["genomics", "transcriptomics", "proteomics"],
+      "features": {
+        "PINK1": 0.05,
+        "Parkin": 0.12,
+        "Mfn2": 0.40,
+        "VDAC1": 0.85,
+        "OPTN": 0.30,
+        "LC3-II": 0.15,
+        "mTOR": 1.80,
+        "MAPK": 1.25,
+        "BAX": 0.95,
+        "CASP3": 0.88
+      }
+    }
+
+  # Prior peptide designs to seed vector database
+  vector-priors.json: |
+    [
+      {
+        "id": "PEP-1042",
+        "disease_state": "Mitochondrial Tagging Deficit (Post-Viral Neuropathy)",
+        "description": "Designed to correct mitochondrial tagging deficits in neurons after viral exposure by enhancing PINK1/Parkin outer-membrane recruitment.",
+        "sequence": "MGAFLGKVLKACVVALSGKLL-NH2",
+        "binding_affinity": -12.4,
+        "stability": 0.94
+      },
+      {
+        "id": "PEP-2210",
+        "disease_state": "Alzheimer's Disease (Amyloid-Beta Aggregation)",
+        "description": "Disrupts the self-assembly of amyloid-beta (Abeta42) oligomers, preventing neurotoxic plaque formation.",
+        "sequence": "KLVFF-NH2",
+        "binding_affinity": -9.8,
+        "stability": 0.82
+      },
+      {
+        "id": "PEP-3051",
+        "disease_state": "SARS-CoV-2 Viral Entry (Spike Protein Blockade)",
+        "description": "Competitively binds to the receptor binding domain (RBD) of SARS-CoV-2 spike protein, blocking human ACE2 interaction.",
+        "sequence": "IEEQAKTFLDKFNHEAEDLFYQ-NH2",
+        "binding_affinity": -14.2,
+        "stability": 0.91
+      }
+    ]
+
+  # Pathway signaling graph nodes and edges
+  pathway-nodes.csv: |
+    id,label,description
+    PINK1,Protein Kinase,Accumulates on outer mitochondrial membrane of damaged mitochondria
+    Parkin,E3 Ubiquitin Ligase,Recruited and activated by phosphorylated ubiquitin
+    Mfn2,GTPase,Phosphorylated by PINK1 promoting Parkin binding
+    VDAC1,Ion Channel,Ubiquitinated by Parkin to recruit autophagy receptors
+    OPTN,Autophagy Receptor,Optineurin; links ubiquitinated cargo to LC3-II
+    LC3-II,Autophagosome Marker,Mediates autophagosome closure
+
+  pathway-edges.csv: |
+    source,target,type,weight,effect
+    PINK1,Mfn2,Phosphorylates,0.90,activation
+    Mfn2,Parkin,Recruits,0.80,activation
+    PINK1,Parkin,Phosphorylates,0.95,activation
+    Parkin,VDAC1,Ubiquitinates,0.85,tagging
+    VDAC1,OPTN,Binds,0.75,recruitment
+    OPTN,LC3-II,Recruits,0.90,mitophagy

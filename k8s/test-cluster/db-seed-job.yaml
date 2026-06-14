@@ -1,0 +1,126 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-seed-job
+  namespace: peptiprompt-validation
+spec:
+  template:
+    spec:
+      containers:
+      - name: seed-runner
+        image: python:3.11-slim
+        command:
+        - python
+        - -c
+        - |
+          import os
+          import json
+          import time
+          import psycopg2
+          import requests
+
+          # Wait for databases to be up
+          time.sleep(10)
+
+          # PostgreSQL Seeding
+          print("Connecting to PostgreSQL...")
+          conn = psycopg2.connect(
+              host=os.getenv("DB_HOST", "postgres"),
+              database=os.getenv("DB_NAME", "peptiprompt"),
+              user=os.getenv("DB_USER", "postgres"),
+              password=os.getenv("DB_PASSWORD", "postgres")
+          )
+          cursor = conn.cursor()
+          # Create designs, audit_logs and consent_logs tables
+          cursor.execute("""
+              CREATE TABLE IF NOT EXISTS designs (
+                  design_id VARCHAR(50) PRIMARY KEY,
+                  prompt TEXT,
+                  disease_state VARCHAR(255),
+                  target_protein VARCHAR(255),
+                  user_id VARCHAR(50),
+                  status VARCHAR(50),
+                  sequence TEXT,
+                  binding_affinity DOUBLE PRECISION,
+                  stability DOUBLE PRECISION,
+                  synthesis_script TEXT,
+                  therapeutic_index DOUBLE PRECISION,
+                  ti_lower DOUBLE PRECISION,
+                  ti_upper DOUBLE PRECISION,
+                  adverse_events TEXT,
+                  dose_response TEXT,
+                  compliance_report TEXT,
+                  is_encrypted BOOLEAN DEFAULT FALSE,
+                  provenance_token TEXT,
+                  biosecurity_status VARCHAR(50) DEFAULT 'UNKNOWN',
+                  consent_token TEXT,
+                  epsilon DOUBLE PRECISION DEFAULT 1.0,
+                  dp_binding_affinity DOUBLE PRECISION,
+                  dp_stability DOUBLE PRECISION
+              );
+          """)
+          cursor.execute("""
+              CREATE TABLE IF NOT EXISTS audit_logs (
+                  index INTEGER PRIMARY KEY,
+                  timestamp DOUBLE PRECISION,
+                  action VARCHAR(100),
+                  details TEXT,
+                  details_hash VARCHAR(64),
+                  prev_hash VARCHAR(64),
+                  block_hash VARCHAR(64),
+                  signature VARCHAR(64)
+              );
+          """)
+          cursor.execute("""
+              CREATE TABLE IF NOT EXISTS consent_logs (
+                  id SERIAL PRIMARY KEY,
+                  user_id VARCHAR(100),
+                  consent_type VARCHAR(100),
+                  timestamp DOUBLE PRECISION,
+                  consent_token VARCHAR(64)
+              );
+          """)
+          conn.commit()
+          cursor.close()
+          conn.close()
+          print("PostgreSQL tables initialized successfully!")
+
+          # Qdrant Seeding via HTTP API
+          qdrant_url = f"http://{os.getenv('QDRANT_HOST', 'qdrant')}:6333"
+          print(f"Connecting to Qdrant at {qdrant_url}...")
+          try:
+              res = requests.get(f"{qdrant_url}/health", timeout=5)
+              if res.status_code == 200:
+                  print("Qdrant health check passed. Creating collection 'prior_designs'...")
+                  col_payload = {
+                      "vectors": {
+                          "size": 512,
+                          "distance": "Cosine"
+                      }
+                  }
+                  requests.put(f"{qdrant_url}/collections/prior_designs", json=col_payload, timeout=5)
+                  print("Qdrant collection 'prior_designs' created.")
+          except Exception as e:
+              print(f"Skipping Qdrant seeding: {e}")
+
+          print("Database seeding completed.")
+        env:
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_NAME
+          value: "peptiprompt"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_PASSWORD
+          value: "postgres"
+        - name: QDRANT_HOST
+          value: "qdrant"
+        volumeMounts:
+        - name: dataset-volume
+          mountPath: /opt/dataset
+      restartPolicy: OnFailure
+      volumes:
+      - name: dataset-volume
+        configMap:
+          name: synthetic-omics-datasets
+  backoffLimit: 3

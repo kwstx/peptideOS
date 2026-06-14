@@ -1,0 +1,159 @@
+version: '3.8'
+
+services:
+  # Relational metadata DB for test runs
+  postgres:
+    image: postgres:15-alpine
+    container_name: peptiprompt-postgres-test
+    environment:
+      POSTGRES_DB: peptiprompt
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  # Kafka coordination and messaging for test runs
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: peptiprompt-zookeeper-test
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: peptiprompt-kafka-test
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  # API Gateway
+  gateway:
+    build:
+      context: ./services/gateway
+      dockerfile: Dockerfile
+    container_name: peptiprompt-gateway-test
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  # Generative AI Diffusion Service
+  diffusion:
+    build:
+      context: ./services/diffusion
+      dockerfile: Dockerfile
+    container_name: peptiprompt-diffusion-test
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      - kafka
+
+  # Digital Twin Simulation Sandbox Service
+  simulation:
+    build:
+      context: ./services/simulation
+      dockerfile: Dockerfile
+    container_name: peptiprompt-simulation-test
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  # Pathway Graph Query Service
+  pathway:
+    build:
+      context: ./services/pathway
+      dockerfile: Dockerfile
+    container_name: peptiprompt-pathway-test
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+
+  # Vector Search Service
+  vector-search:
+    build:
+      context: ./services/vector_search
+      dockerfile: Dockerfile
+    container_name: peptiprompt-vector-search-test
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+
+  # NLP Pipeline Service
+  nlp:
+    build:
+      context: ./services/nlp
+      dockerfile: Dockerfile
+    container_name: peptiprompt-nlp-test
+
+  # Synthesis-Ready Output Subsystem
+  synthesis:
+    build:
+      context: ./services/synthesis
+      dockerfile: Dockerfile
+    container_name: peptiprompt-synthesis-test
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
+  # Containerized Test Harness Pod running pytest validation suite
+  test-harness:
+    build:
+      context: ./tests/test-harness
+      dockerfile: Dockerfile.test
+    container_name: peptiprompt-test-harness
+    environment:
+      - GATEWAY_URL=http://gateway:8000
+      - PATHWAY_URL=http://pathway:8002
+      - VECTOR_SEARCH_URL=http://vector-search:8003
+      - NLP_URL=http://nlp:8004
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      gateway:
+        condition: service_started
+      pathway:
+        condition: service_started
+      vector-search:
+        condition: service_started
+      nlp:
+        condition: service_started

@@ -1,0 +1,357 @@
+# 1. Gateway Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-service
+  namespace: peptiprompt-validation
+  labels:
+    app: gateway-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway-service
+  template:
+    metadata:
+      labels:
+        app: gateway-service
+    spec:
+      containers:
+      - name: gateway
+        image: peptiprompt/gateway:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_NAME
+          value: "peptiprompt"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_PASSWORD
+          value: "postgres"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: peptiprompt-validation
+spec:
+  ports:
+  - port: 8000
+    targetPort: 8000
+  selector:
+    app: gateway-service
+---
+# 2. Diffusion Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: diffusion-service
+  namespace: peptiprompt-validation
+  labels:
+    app: diffusion-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: diffusion-service
+  template:
+    metadata:
+      labels:
+        app: diffusion-service
+    spec:
+      containers:
+      - name: diffusion
+        image: peptiprompt/diffusion:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+---
+# 3. Simulation Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simulation-service
+  namespace: peptiprompt-validation
+  labels:
+    app: simulation-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simulation-service
+  template:
+    metadata:
+      labels:
+        app: simulation-service
+    spec:
+      containers:
+      - name: simulation
+        image: peptiprompt/simulation:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_NAME
+          value: "peptiprompt"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_PASSWORD
+          value: "postgres"
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+---
+# 4. Pathway Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pathway-service
+  namespace: peptiprompt-validation
+  labels:
+    app: pathway-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pathway-service
+  template:
+    metadata:
+      labels:
+        app: pathway-service
+    spec:
+      containers:
+      - name: pathway
+        image: peptiprompt/pathway:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8002
+        env:
+        - name: NEO4J_URI
+          value: "bolt://neo4j:7687"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8002
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "150m"
+            memory: "128Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pathway
+  namespace: peptiprompt-validation
+spec:
+  ports:
+  - port: 8002
+    targetPort: 8002
+  selector:
+    app: pathway-service
+---
+# 5. Vector Search Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vector-search-service
+  namespace: peptiprompt-validation
+  labels:
+    app: vector-search-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vector-search-service
+  template:
+    metadata:
+      labels:
+        app: vector-search-service
+    spec:
+      containers:
+      - name: vector-search
+        image: peptiprompt/vector-search:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8003
+        env:
+        - name: QDRANT_HOST
+          value: "qdrant"
+        - name: QDRANT_PORT
+          value: "6333"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8003
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8003
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "150m"
+            memory: "128Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vector-search
+  namespace: peptiprompt-validation
+spec:
+  ports:
+  - port: 8003
+    targetPort: 8003
+  selector:
+    app: vector-search-service
+---
+# 6. NLP Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nlp-service
+  namespace: peptiprompt-validation
+  labels:
+    app: nlp-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nlp-service
+  template:
+    metadata:
+      labels:
+        app: nlp-service
+    spec:
+      containers:
+      - name: nlp
+        image: peptiprompt/nlp:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8004
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8004
+          initialDelaySeconds: 15
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8004
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: "150m"
+            memory: "128Mi"
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nlp
+  namespace: peptiprompt-validation
+spec:
+  ports:
+  - port: 8004
+    targetPort: 8004
+  selector:
+    app: nlp-service
+---
+# 7. Synthesis Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synthesis-service
+  namespace: peptiprompt-validation
+  labels:
+    app: synthesis-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: synthesis-service
+  template:
+    metadata:
+      labels:
+        app: synthesis-service
+    spec:
+      containers:
+      - name: synthesis
+        image: peptiprompt/synthesis:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_NAME
+          value: "peptiprompt"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_PASSWORD
+          value: "postgres"
+        resources:
+          limits:
+            cpu: "250m"
+            memory: "256Mi"
+          requests:
+            cpu: "100m"
+            memory: "128Mi"

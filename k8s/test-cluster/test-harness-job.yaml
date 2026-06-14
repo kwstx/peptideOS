@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: test-harness-job
+  namespace: peptiprompt-validation
+spec:
+  template:
+    spec:
+      containers:
+      - name: test-harness
+        image: peptiprompt/test-harness:latest
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: GATEWAY_URL
+          value: "http://gateway:8000"
+        - name: PATHWAY_URL
+          value: "http://pathway:8002"
+        - name: VECTOR_SEARCH_URL
+          value: "http://vector-search:8003"
+        - name: NLP_URL
+          value: "http://nlp:8004"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: DB_HOST
+          value: "postgres"
+        - name: DB_NAME
+          value: "peptiprompt"
+        - name: DB_USER
+          value: "postgres"
+        - name: DB_PASSWORD
+          value: "postgres"
+      restartPolicy: Never
+  backoffLimit: 0
