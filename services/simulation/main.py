@@ -4,13 +4,24 @@ import logging
 import time
 import random
 import numpy as np
+
+# Configure logging first
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("simulation-service")
+
 from confluent_kafka import Consumer, KafkaError
 import psycopg2
 from structure_prediction import run_structure_prediction_pipeline
 from digital_twin import DigitalTwinSandbox
+from efficacy_risk import (
+    SequenceFeatureExtractor,
+    EnsembleEfficacyRiskModel,
+    generate_regulatory_grade_report
+)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("simulation-service")
+# Initialize Conformal Ensemble ML Model
+logger.info("Initializing Efficacy and Risk Conformal Ensemble model...")
+efficacy_risk_model = EnsembleEfficacyRiskModel(significance_level=0.05)
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
 DB_HOST = os.getenv("DB_HOST", "postgres")
@@ -105,7 +116,59 @@ ANALYTICAL_PURIFICATION:
   QUALITY_CONTROL: ESI-MS (Target MW match) and Analytical HPLC (>98% purity).
 """
 
-def update_database_results(design_id: str, sequence: str, affinity: float, stability: float, script: str):
+def check_db_schema():
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS
+        )
+        cursor = conn.cursor()
+        # Ensure table designs exists
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS designs (
+                design_id VARCHAR(50) PRIMARY KEY,
+                prompt TEXT,
+                disease_state VARCHAR(255),
+                target_protein VARCHAR(255),
+                user_id VARCHAR(50),
+                status VARCHAR(50),
+                sequence TEXT,
+                binding_affinity DOUBLE PRECISION,
+                stability DOUBLE PRECISION,
+                synthesis_script TEXT,
+                therapeutic_index DOUBLE PRECISION,
+                ti_lower DOUBLE PRECISION,
+                ti_upper DOUBLE PRECISION,
+                adverse_events TEXT,
+                dose_response TEXT,
+                compliance_report TEXT
+            );
+        """)
+        # In case the table already existed but without the new columns, add them
+        new_cols = [
+            ("therapeutic_index", "DOUBLE PRECISION"),
+            ("ti_lower", "DOUBLE PRECISION"),
+            ("ti_upper", "DOUBLE PRECISION"),
+            ("adverse_events", "TEXT"),
+            ("dose_response", "TEXT"),
+            ("compliance_report", "TEXT")
+        ]
+        for col_name, col_type in new_cols:
+            cursor.execute(f"ALTER TABLE designs ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info("Database schema check/migration completed successfully.")
+    except Exception as e:
+        logger.error(f"Database schema check/migration failed: {e}")
+
+def update_database_results(
+    design_id: str, sequence: str, affinity: float, stability: float, script: str,
+    ti: float = None, ti_lower: float = None, ti_upper: float = None,
+    adverse_events: str = None, dose_response: str = None, compliance_report: str = None
+):
     try:
         conn = psycopg2.connect(
             host=DB_HOST,
@@ -117,10 +180,12 @@ def update_database_results(design_id: str, sequence: str, affinity: float, stab
         cursor.execute(
             """
             UPDATE designs 
-            SET status = %s, sequence = %s, binding_affinity = %s, stability = %s, synthesis_script = %s 
+            SET status = %s, sequence = %s, binding_affinity = %s, stability = %s, synthesis_script = %s,
+                therapeutic_index = %s, ti_lower = %s, ti_upper = %s,
+                adverse_events = %s, dose_response = %s, compliance_report = %s
             WHERE design_id = %s;
             """,
-            ("COMPLETED", sequence, affinity, stability, script, design_id)
+            ("COMPLETED", sequence, affinity, stability, script, ti, ti_lower, ti_upper, adverse_events, dose_response, compliance_report, design_id)
         )
         conn.commit()
         cursor.close()
@@ -129,8 +194,10 @@ def update_database_results(design_id: str, sequence: str, affinity: float, stab
     except Exception as e:
         logger.error(f"Failed to update database for {design_id}: {e}")
 
+
 def main():
     logger.info("Starting Digital Twin Simulation Service...")
+    check_db_schema()
     
     try:
         consumer = Consumer(consumer_config)
@@ -215,6 +282,51 @@ def main():
                 binding_affinity = -7.5 - abs(final_pot_energy) * 0.1
                 stability = max(0.60, min(0.99, 1.0 - deficit_recovery))
                 
+                # Efficacy and Risk ML Quantification Suite
+                seq_features = SequenceFeatureExtractor.extract_features(sequence)
+                struct_metrics = {
+                    "free_energy": float(descriptors.get("free_energy", -5.0)),
+                    "binding_stability": float(stability),
+                    "min_distance": float(1.5 + (1.0 - stability) * 6.0),
+                    "coupling_factor": float(0.2 + 1.8 * stability)
+                }
+                
+                log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ensemble_uncertainty_log.json")
+                trajectory_summaries = {}
+                try:
+                    with open(log_path, "r") as f:
+                        log_data = json.load(f)
+                    required_nodes = ["mTOR", "PINK1", "Parkin", "BAX", "CASP3", "MAPK"]
+                    for node in required_nodes:
+                        if "trajectories" in log_data and node in log_data["trajectories"]:
+                            node_data = log_data["trajectories"][node]
+                            trajectory_summaries[f"{node}_activity_mean"] = node_data["activity"]["mean"][-1]
+                            trajectory_summaries[f"{node}_activity_std"] = node_data["activity"]["std"][-1]
+                        else:
+                            trajectory_summaries[f"{node}_activity_mean"] = 0.1
+                            trajectory_summaries[f"{node}_activity_std"] = 0.02
+                except Exception as log_err:
+                    logger.warning(f"Could not load uncertainty log for features: {log_err}. Using baseline defaults.")
+                    required_nodes = ["mTOR", "PINK1", "Parkin", "BAX", "CASP3", "MAPK"]
+                    for node in required_nodes:
+                        trajectory_summaries[f"{node}_activity_mean"] = 0.1
+                        trajectory_summaries[f"{node}_activity_std"] = 0.02
+
+                logger.info(f"[{design_id}] Ingesting concatenated feature vectors for efficacy and risk quantification...")
+                er_results = efficacy_risk_model.predict(seq_features, struct_metrics, trajectory_summaries)
+                
+                # Generate regulatory grade report
+                report_md = generate_regulatory_grade_report(design_id, sequence, er_results)
+                
+                # Save the report to local file
+                report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"regulatory_report_{design_id}.md")
+                try:
+                    with open(report_path, "w") as f:
+                        f.write(report_md)
+                    logger.info(f"[{design_id}] Regulatory grade report generated: {report_path}")
+                except Exception as report_err:
+                    logger.error(f"Failed to write regulatory report: {report_err}")
+
                 # Generate production solid phase synthesis script
                 synthesis_script = generate_synthesis_script(sequence, design_id)
                 
@@ -224,7 +336,13 @@ def main():
                     sequence=sequence,
                     affinity=binding_affinity,
                     stability=stability,
-                    script=synthesis_script
+                    script=synthesis_script,
+                    ti=er_results["therapeutic_index"]["point_prediction"],
+                    ti_lower=er_results["therapeutic_index"]["conformal_interval"][0],
+                    ti_upper=er_results["therapeutic_index"]["conformal_interval"][1],
+                    adverse_events=json.dumps(er_results["adverse_events"]),
+                    dose_response=json.dumps(er_results["dose_response"]),
+                    compliance_report=report_md
                 )
                 logger.info(f"Completed digital twin simulation for {design_id}. Target Binding: {binding_affinity:.2f} kcal/mol, Stability: {stability*100:.1f}%.")
 

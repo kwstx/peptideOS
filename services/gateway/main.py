@@ -144,7 +144,7 @@ async def trigger_peptide_design(request: DesignRequest):
 @app.get("/api/v1/peptides/{design_id}")
 def get_peptide_design(design_id: str):
     """
-    Retrieves metadata and results for a specific design job from PostgreSQL.
+    Retrieves metadata and results for a specific design job from PostgreSQL, including Efficacy & Risk conformal predictions.
     """
     conn = get_db_connection()
     if not conn:
@@ -154,7 +154,11 @@ def get_peptide_design(design_id: str):
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT design_id, prompt, disease_state, target_protein, status, sequence, binding_affinity, stability, synthesis_script FROM designs WHERE design_id = %s;",
+            """
+            SELECT design_id, prompt, disease_state, target_protein, status, sequence, binding_affinity, stability, synthesis_script,
+                   therapeutic_index, ti_lower, ti_upper, adverse_events, dose_response, compliance_report
+            FROM designs WHERE design_id = %s;
+            """,
             (design_id,)
         )
         row = cursor.fetchone()
@@ -173,7 +177,13 @@ def get_peptide_design(design_id: str):
             "sequence": row[5] or "",
             "binding_affinity": float(row[6]) if row[6] is not None else 0.0,
             "stability": float(row[7]) if row[7] is not None else 0.0,
-            "synthesis_script": row[8] or ""
+            "synthesis_script": row[8] or "",
+            "therapeutic_index": float(row[9]) if row[9] is not None else None,
+            "ti_lower": float(row[10]) if row[10] is not None else None,
+            "ti_upper": float(row[11]) if row[11] is not None else None,
+            "adverse_events": json.loads(row[12]) if (row[12] is not None and row[12] != "") else None,
+            "dose_response": json.loads(row[13]) if (row[13] is not None and row[13] != "") else None,
+            "compliance_report": row[14] or ""
         }
     except Exception as e:
         logger.error(f"Database query error: {e}")
@@ -266,6 +276,75 @@ def get_mock_design_result(design_id: str) -> dict:
             "PRECIPITATION: Cold Diethyl Ether wash (3x);\n"
             "PURIFY: RP-HPLC (C18 column, Acetonitrile/Water + 0.1% TFA gradient);\n"
             "ANALYZE: ESI-MS validation (Calculated MW: 2184.7 Da)."
+        ),
+        "therapeutic_index": 18.45,
+        "ti_lower": 12.21,
+        "ti_upper": 24.69,
+        "adverse_events": {
+            "probabilities": {
+                "Apoptosis Pathway Activation": 0.084,
+                "Inflammatory Cascade Triggering": 0.112,
+                "Off-Target Kinase Exhaustion": 0.051,
+                "Mitophagosome Blockage": 0.038
+            },
+            "conformal_thresholds": {
+                "Apoptosis Pathway Activation": 0.284,
+                "Inflammatory Cascade Triggering": 0.315,
+                "Off-Target Kinase Exhaustion": 0.25,
+                "Mitophagosome Blockage": 0.32
+            },
+            "conformal_prediction_set": [],
+            "adverse_risk_level": "LOW"
+        },
+        "dose_response": {
+            "doses_uM": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0],
+            "predicted_responses": [0.002, 0.015, 0.184, 0.742, 0.925, 0.94, 0.935],
+            "conformal_band_lower": [0.0, 0.0, 0.062, 0.584, 0.812, 0.825, 0.818],
+            "conformal_band_upper": [0.024, 0.082, 0.312, 0.892, 0.995, 1.0, 1.0],
+            "hill_parameters": {
+                "Emax": 0.942,
+                "EC50": 0.452,
+                "HillSlope": 1.184
+            }
+        },
+        "compliance_report": (
+            "# PEPTIDEOS CLINICAL & REGULATORY COMPLIANCE REPORT\n"
+            "## EFFICACY AND RISK QUANTIFICATION SUITE\n"
+            f"**PEPTIDE IDENTIFIER:** {design_id}\n"
+            "**SEQUENCE:** MGAFLGKVLKACVVALSGKLL-NH2\n"
+            "**EVALUATION DATE:** 2026-06-14\n"
+            "**ASSUAGED CONFIDENCE LIMIT:** 95.0% (Significance Level alpha = 0.05)\n\n"
+            "### 1. SUMMARY OF QUANTITATIVE FINDINGS\n"
+            "*   **Predicted Therapeutic Index (TI):** 18.45\n"
+            "*   **Calibrated 95.0% Conformal Interval:** [12.21, 24.69]\n"
+            "    *   *Note: Conformal bounds guarantee that the true therapeutic index lies within this interval with >= 95% probability under longitudinal outcomes.*\n"
+            "*   **Quantified Adverse Risk Class:** **LOW**\n\n"
+            "### 2. DOSE-RESPONSE PROFILE WITH CALIBRATED CONFORMAL BANDS\n"
+            "| Dose (microMolar) | Predicted Response | Conformal Lower Bound (95.0%) | Conformal Upper Bound (95.0%) |\n"
+            "|:-----------------:|:------------------:|:-----------------------------------:|:-----------------------------------:|\n"
+            "| 0.001             | 0.0020             | 0.0000                              | 0.0240                              |\n"
+            "| 0.01              | 0.0150             | 0.0000                              | 0.0820                              |\n"
+            "| 0.1               | 0.1840             | 0.0620                              | 0.3120                              |\n"
+            "| 1.0               | 0.7420             | 0.5840                              | 0.8920                              |\n"
+            "| 10.0              | 0.9250             | 0.8120                              | 0.9950                              |\n"
+            "| 100.0             | 0.9400             | 0.8250                              | 1.0000                              |\n"
+            "| 1000.0            | 0.9350             | 0.8180                              | 1.0000                              |\n\n"
+            "**Hill Equation Parametric Fitting:**\n"
+            "*   **Maximal Response (Emax):** 0.9420\n"
+            "*   **Half-Maximal Effective Dose (EC50):** 0.4520 uM\n"
+            "*   **Hill Coefficient (Slope):** 1.1840\n\n"
+            "### 3. ADVERSE NETWORK REWIRING RISK ASSESSMENT\n"
+            "| Adverse Rewiring Event | Predicted Probability | Conformal Calibration Threshold | Retained in Conformal Prediction Set |\n"
+            "|:----------------------|:---------------------:|:------------------------------:|:------------------------------------:|\n"
+            "| Apoptosis Pathway Activation | 0.0840              | 0.2840                         | NO                                   |\n"
+            "| Inflammatory Cascade Triggering | 0.1120           | 0.3150                         | NO                                   |\n"
+            "| Off-Target Kinase Exhaustion | 0.0510              | 0.2500                         | NO                                   |\n"
+            "| Mitophagosome Blockage | 0.0380                    | 0.3200                         | NO                                   |\n\n"
+            "**Conformal Active Prediction Set (Guaranteed coverage of true rewiring events):**\n"
+            "`[]`\n\n"
+            "### 4. METHODOLOGY & UNCERTAINTY CALIBRATION\n"
+            "1.  **Ensemble Machine Learning Models**: Multi-scale feature vectors were constructed from sequence, structural, and pathway trajectory features.\n"
+            "2.  **Split Conformal Prediction**: Models were calibrated on a disjoint partition of longitudinal therapeutic outcome records (n_cal=50). Conformal bounds ensure mathematical coverage guarantees, complying with FDA/EMA guidelines for machine-learning-assisted drug candidate profiling."
         )
     }
 

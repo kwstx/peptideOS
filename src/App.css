@@ -706,3 +706,121 @@
     box-shadow: 0 0 20px rgba(16, 185, 129, 0.6);
   }
 }
+
+/* Efficacy & Risk Quantification Styles */
+.efficacy-risk-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+}
+
+.efficacy-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+}
+
+.er-card {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.er-card-header {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.er-value {
+  font-size: 2.2rem;
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+
+.er-interval {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.er-desc {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.safety-bar-container {
+  width: 100%;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  position: relative;
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.safety-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease-in-out;
+}
+
+.safety-bar-marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.efficacy-charts-row {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 20px;
+}
+
+@media (max-width: 900px) {
+  .efficacy-charts-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.er-chart-container {
+  padding: 20px;
+}
+
+.er-adverse-container {
+  padding: 20px;
+}
+
+.er-report-container {
+  padding: 20px;
+}
+
+.download-report-btn {
+  transition: all 0.2s ease;
+}
+
+.download-report-btn:hover {
+  filter: brightness(1.1);
+  box-shadow: var(--glow-cyan);
+}
+
+.regulatory-report-viewer::-webkit-scrollbar {
+  width: 6px;
+}
+
+.regulatory-report-viewer::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.regulatory-report-viewer::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
