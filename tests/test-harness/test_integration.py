@@ -372,5 +372,141 @@ def test_observability_endpoints():
     assert "token_distribution_drift_detected" in drift
 
 
+
+def test_sequential_pipeline_sandbox():
+    """
+    Orchestrated integration testing of sequential pipeline stages in a controlled sandbox.
+    Verifies data contract schema enforcement, programmatic output injection, 
+    and data propagation checks with differential logging for modeling handoffs.
+    """
+    logger = logging.getLogger("test-integration-sandbox")
+    logger.setLevel(logging.INFO)
+    
+    # 1. ORCHESTRATED EXECUTION: Stage 1 - NLP Language Understanding Layer
+    logger.info("Executing NLP Parsing Stage...")
+    nlp_url = f"{NLP_URL}/api/v1/nlp/parse"
+    nlp_payload = {
+        "text": "Correcting mitochondrial tagging deficits in neurons after viral exposure",
+        "context_id": f"sandbox_ctx_{int(time.time())}"
+    }
+    nlp_response = requests.post(nlp_url, json=nlp_payload, timeout=5)
+    assert nlp_response.status_code == 200, "NLP Parsing service call failed."
+    nlp_data = nlp_response.json()
+    
+    # Schema enforcement & Contract validation for Stage 1
+    expected_nlp_fields = {"target_proteins", "affected_pathways", "desired_modulation_polarity", "constraint_parameters"}
+    missing_nlp_fields = expected_nlp_fields - set(nlp_data.keys())
+    assert not missing_nlp_fields, f"NLP data contract breach. Missing fields: {missing_nlp_fields}"
+    assert isinstance(nlp_data["target_proteins"], list) and len(nlp_data["target_proteins"]) > 0, "NLP target_proteins must be a non-empty list"
+    
+    # 2. PROGRAMMATIC INJECTION: Map NLP output into Diffusion input
+    logger.info("Mapping NLP outputs to Gateway/Diffusion design payload...")
+    design_payload = {
+        "prompt": nlp_payload["text"],
+        "disease_state": "Mitochondrial Tagging Deficit (Post-Viral Neuropathy)",
+        "target_protein": " / ".join(nlp_data["target_proteins"]),
+        "user_id": "sandbox_user_integration",
+        "simulation_complexity": "standard",
+        "is_encrypted": False,
+        "consent_token": None,
+        "epsilon": 1.0
+    }
+    
+    # Differential logging: Compare NLP schema outputs with Gateway/Diffusion input fields
+    # Here we detect information loss: 'affected_pathways' and 'desired_modulation_polarity'
+    # are present in the NLP output but NOT directly ingested by the Gateway/Diffusion design payload!
+    logger.info("\n--- [DIFFERENTIAL LOGGING] Handoff Stage: NLP to Gateway/Diffusion ---")
+    mapped_keys = {"target_proteins": "target_protein"}
+    for src_key, tgt_key in mapped_keys.items():
+        assert src_key in nlp_data, f"Source missing field: {src_key}"
+        assert tgt_key in design_payload, f"Target missing field: {tgt_key}"
+        logger.info(f"Verified mapping: {src_key} -> {tgt_key} (Value: '{design_payload[tgt_key]}')")
+        
+    dropped_keys = set(nlp_data.keys()) - {"target_proteins", "constraint_parameters"}
+    for key in dropped_keys:
+        logger.warning(f"[Information Loss] Field '{key}' (Value: {nlp_data[key]}) was dropped during handoff to Diffusion.")
+        
+    # Trigger design pipeline via Gateway
+    headers = get_auth_headers("researcher")
+    design_url = f"{GATEWAY_URL}/api/v1/peptides/design"
+    response = requests.post(design_url, json=design_payload, headers=headers, timeout=5)
+    assert response.status_code == 200, "Gateway design trigger failed."
+    design_data = response.json()
+    design_id = design_data["design_id"]
+    assert design_id.startswith("pep_")
+    
+    # 3. WS TELEMETRY VERIFICATION: Monitor pipeline stages execution
+    ws_base = GATEWAY_URL.replace("http://", "ws://").replace("https://", "wss://")
+    ws_url = f"{ws_base}/ws/telemetry/{design_id}"
+    ws = websocket.create_connection(ws_url, timeout=10)
+    stages = []
+    
+    try:
+        for _ in range(10):
+            try:
+                msg = ws.recv()
+                event = json.loads(msg)
+                stages.append(event["stage"])
+                if event["stage"] == "COMPLETED":
+                    break
+            except websocket.WebSocketTimeoutException:
+                break
+    finally:
+        ws.close()
+        
+    assert "DIFFUSION_GENERATION" in stages, "Telemetry did not broadcast DIFFUSION_GENERATION stage."
+    assert "DIGITAL_TWIN_SIMULATION" in stages, "Telemetry did not broadcast DIGITAL_TWIN_SIMULATION stage."
+    
+    # 4. POLL COMPLETION: Wait until simulation completes
+    result_url = f"{GATEWAY_URL}/api/v1/peptides/{design_id}"
+    completed = False
+    for _ in range(30):
+        res = requests.get(result_url, headers=headers, timeout=5)
+        assert res.status_code == 200
+        res_data = res.json()
+        if res_data["status"] == "COMPLETED":
+            completed = True
+            break
+        time.sleep(1)
+    assert completed, "Pipeline did not transition to COMPLETED state."
+    
+    # 5. DATA PROPAGATION & SCHEMA CONTRACT VERIFICATION via Database
+    logger.info("Verifying data contracts and propagation in PostgreSQL database...")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT sequence, binding_affinity, stability, compliance_report, provenance_token, biosecurity_status 
+        FROM designs WHERE design_id = %s;
+        """,
+        (design_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    
+    assert row is not None, "Metadata record not found in PostgreSQL."
+    sequence, binding_affinity, stability, compliance_report, provenance_token, biosecurity_status = row
+    
+    # Schema validation of final persisted results
+    assert len(sequence) > 0, "Sequence must be non-empty"
+    assert binding_affinity is not None and binding_affinity < 0.0, f"Invalid binding affinity docking score: {binding_affinity}"
+    assert stability is not None and 0.0 <= stability <= 1.0, f"Invalid stability prediction: {stability}"
+    assert provenance_token.startswith("prov_"), "Provenance token missing or invalid."
+    assert biosecurity_status == "CLEARED", "Biosecurity status mismatch."
+    
+    # Differential logging: verify structure prediction to digital twin handoff
+    # In main.py: binding_affinity is derived from Langevin MD potential energy
+    # stability is derived from the digital twin sandbox recovery score
+    logger.info("\n--- [DIFFERENTIAL LOGGING] Handoff Stage: Structure Prediction to Digital Twin ---")
+    logger.info(f"Verified docking score (binding affinity) propagated to database: {binding_affinity} kcal/mol")
+    logger.info(f"Verified structural stability prediction propagated to database: {stability}")
+    
+    # Check compliance report format
+    assert "# PEPTIDEOS CLINICAL & REGULATORY COMPLIANCE REPORT" in compliance_report, "Compliance report header missing."
+    logger.info("Integration test for sequential pipeline stages completed successfully!")
+
+
 if __name__ == "__main__":
     pytest.main(["-v", __file__])
+
