@@ -78,17 +78,21 @@ DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASS = os.getenv("DB_PASSWORD", "postgres")
 
 # Initialize Kafka Producer
-try:
-    producer_config = {
-        'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
-        'client.id': 'gateway-service',
-        'acks': 'all'
-    }
-    kafka_producer = Producer(producer_config)
-    logger.info("Kafka Producer initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize Kafka producer: {e}")
-    kafka_producer = None
+kafka_producer = None
+if KAFKA_BOOTSTRAP_SERVERS and KAFKA_BOOTSTRAP_SERVERS.strip() not in ["", "mock", "disable", "none"]:
+    try:
+        producer_config = {
+            'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+            'client.id': 'gateway-service',
+            'acks': 'all'
+        }
+        kafka_producer = Producer(producer_config)
+        logger.info("Kafka Producer initialized successfully.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Kafka producer: {e}")
+        kafka_producer = None
+else:
+    logger.warning("Kafka Producer disabled by configuration (fallback mode enabled).")
 
 # Connect to metadata database
 def get_db_connection():
