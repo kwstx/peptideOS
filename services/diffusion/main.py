@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from confluent_kafka import Consumer, Producer, KafkaError
+from governance import CryptographicManager, DifferentialPrivacyManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("diffusion-service")
@@ -190,6 +191,24 @@ def main():
                 design_id = job_data.get("design_id")
                 prompt = job_data.get("prompt")
                 target = job_data.get("target_protein", "Unknown")
+                is_encrypted = job_data.get("is_encrypted", False)
+                consent_token = job_data.get("consent_token")
+                epsilon = job_data.get("epsilon", 1.0)
+                
+                # Decrypt inputs if E2EE is active
+                if is_encrypted:
+                    logger.info(f"[{design_id}] Decrypting biomolecular query context via AES-256-GCM...")
+                    try:
+                        dec_prompt = CryptographicManager.decrypt(prompt)
+                        prompt = dec_prompt.get("val", prompt)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt prompt: {e}")
+                    
+                    try:
+                        dec_target = CryptographicManager.decrypt(target)
+                        target = dec_target.get("val", target)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt target: {e}")
                 
                 logger.info(f"Processing design job {design_id}: '{prompt}' against target '{target}'")
                 
@@ -199,11 +218,14 @@ def main():
                 # Publish outcome to 'designed-peptides' topic
                 output_payload = {
                     "design_id": design_id,
-                    "prompt": prompt,
-                    "disease_state": job_data.get("disease_state"),
-                    "target_protein": target,
+                    "prompt": job_data.get("prompt"), # Keep original (possibly encrypted) prompt
+                    "disease_state": job_data.get("disease_state"), # Keep original (possibly encrypted) disease_state
+                    "target_protein": job_data.get("target_protein"), # Keep original (possibly encrypted) target_protein
                     "sequence": sequence,
                     "simulation_complexity": job_data.get("simulation_complexity", "standard"),
+                    "is_encrypted": is_encrypted,
+                    "consent_token": consent_token,
+                    "epsilon": epsilon,
                     "timestamp": time.time()
                 }
                 

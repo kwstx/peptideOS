@@ -18,6 +18,13 @@ from efficacy_risk import (
     EnsembleEfficacyRiskModel,
     generate_regulatory_grade_report
 )
+from governance import (
+    CryptographicManager,
+    ImmutableAuditLedger,
+    DifferentialPrivacyManager,
+    ComplianceValidator,
+    ProvenanceTracker
+)
 
 # Initialize Conformal Ensemble ML Model
 logger.info("Initializing Efficacy and Risk Conformal Ensemble model...")
@@ -146,6 +153,32 @@ def check_db_schema():
                 compliance_report TEXT
             );
         """)
+        
+        # Create audit_logs table (Immutable ledger hash chain)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                index INTEGER PRIMARY KEY,
+                timestamp DOUBLE PRECISION,
+                action VARCHAR(100),
+                details TEXT,
+                details_hash VARCHAR(64),
+                prev_hash VARCHAR(64),
+                block_hash VARCHAR(64),
+                signature VARCHAR(64)
+            );
+        """)
+
+        # Create consent_logs table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS consent_logs (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR(100),
+                consent_type VARCHAR(100),
+                timestamp DOUBLE PRECISION,
+                consent_token VARCHAR(64)
+            );
+        """)
+        
         # In case the table already existed but without the new columns, add them
         new_cols = [
             ("therapeutic_index", "DOUBLE PRECISION"),
@@ -153,7 +186,11 @@ def check_db_schema():
             ("ti_upper", "DOUBLE PRECISION"),
             ("adverse_events", "TEXT"),
             ("dose_response", "TEXT"),
-            ("compliance_report", "TEXT")
+            ("compliance_report", "TEXT"),
+            ("is_encrypted", "BOOLEAN DEFAULT FALSE"),
+            ("provenance_token", "TEXT"),
+            ("biosecurity_status", "VARCHAR(50) DEFAULT 'UNKNOWN'"),
+            ("consent_token", "TEXT")
         ]
         for col_name, col_type in new_cols:
             cursor.execute(f"ALTER TABLE designs ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
@@ -167,7 +204,10 @@ def check_db_schema():
 def update_database_results(
     design_id: str, sequence: str, affinity: float, stability: float, script: str,
     ti: float = None, ti_lower: float = None, ti_upper: float = None,
-    adverse_events: str = None, dose_response: str = None, compliance_report: str = None
+    adverse_events: str = None, dose_response: str = None, compliance_report: str = None,
+    is_encrypted: bool = False, provenance_token: str = None,
+    biosecurity_status: str = 'UNKNOWN', consent_token: str = None,
+    epsilon: float = 1.0, dp_binding_affinity: float = None, dp_stability: float = None
 ):
     try:
         conn = psycopg2.connect(
@@ -177,20 +217,51 @@ def update_database_results(
             password=DB_PASS
         )
         cursor = conn.cursor()
+        
+        final_sequence = sequence
+        final_script = script
+        final_compliance = compliance_report
+        
+        if is_encrypted:
+            try:
+                final_sequence = CryptographicManager.encrypt({"val": sequence})
+                final_script = CryptographicManager.encrypt({"val": script})
+                if compliance_report:
+                    final_compliance = CryptographicManager.encrypt({"val": compliance_report})
+            except Exception as enc_err:
+                logger.error(f"Encryption failed during DB write: {enc_err}")
+                
         cursor.execute(
             """
             UPDATE designs 
             SET status = %s, sequence = %s, binding_affinity = %s, stability = %s, synthesis_script = %s,
                 therapeutic_index = %s, ti_lower = %s, ti_upper = %s,
-                adverse_events = %s, dose_response = %s, compliance_report = %s
+                adverse_events = %s, dose_response = %s, compliance_report = %s,
+                is_encrypted = %s, provenance_token = %s, biosecurity_status = %s, consent_token = %s,
+                epsilon = %s, dp_binding_affinity = %s, dp_stability = %s
             WHERE design_id = %s;
             """,
-            ("COMPLETED", sequence, affinity, stability, script, ti, ti_lower, ti_upper, adverse_events, dose_response, compliance_report, design_id)
+            ("COMPLETED", final_sequence, affinity, stability, final_script, 
+             ti, ti_lower, ti_upper, adverse_events, dose_response, final_compliance,
+             is_encrypted, provenance_token, biosecurity_status, consent_token,
+             epsilon, dp_binding_affinity, dp_stability, design_id)
         )
         conn.commit()
+        
+        # Write to Immutable Audit Ledger
+        audit_details = {
+            "design_id": design_id,
+            "biosecurity_status": biosecurity_status,
+            "is_encrypted": is_encrypted,
+            "epsilon": epsilon,
+            "provenance_token": provenance_token,
+            "consent_token": consent_token
+        }
+        ImmutableAuditLedger.create_log_entry(conn, "SIMULATION_COMPLETED", audit_details)
+        
         cursor.close()
         conn.close()
-        logger.info(f"Database updated successfully for {design_id}")
+        logger.info(f"Database updated and audited successfully for {design_id}")
     except Exception as e:
         logger.error(f"Failed to update database for {design_id}: {e}")
 
@@ -222,17 +293,67 @@ def main():
                 else:
                     logger.error(f"Kafka error: {msg.error()}")
                     break
-
             try:
                 peptide_data = json.loads(msg.value().decode('utf-8'))
                 design_id = peptide_data.get("design_id")
-                sequence = peptide_data.get("sequence")
+                raw_sequence = peptide_data.get("sequence")
                 complexity = peptide_data.get("simulation_complexity", "standard")
+                is_encrypted = peptide_data.get("is_encrypted", False)
+                consent_token = peptide_data.get("consent_token")
+                epsilon = peptide_data.get("epsilon", 1.0)
                 
-                logger.info(f"Received designed peptide for {design_id}: '{sequence}'. Starting digital twin simulation.")
+                # Decrypt inputs if E2EE is active
+                prompt = peptide_data.get("prompt")
+                disease_state = peptide_data.get("disease_state", "Unknown")
+                target_protein = peptide_data.get("target_protein", "Unknown")
+                
+                if is_encrypted:
+                    logger.info(f"[{design_id}] Decrypting biomolecular query context via AES-256-GCM...")
+                    try:
+                        dec_prompt = CryptographicManager.decrypt(prompt)
+                        prompt = dec_prompt.get("val", prompt)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt prompt: {e}")
+                    
+                    try:
+                        dec_disease = CryptographicManager.decrypt(disease_state)
+                        disease_state = dec_disease.get("val", disease_state)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt disease_state: {e}")
+                        
+                    try:
+                        dec_target = CryptographicManager.decrypt(target_protein)
+                        target_protein = dec_target.get("val", target_protein)
+                    except Exception as e:
+                        logger.error(f"Failed to decrypt target_protein: {e}")
+                
+                logger.info(f"Received designed peptide for {design_id}: '{raw_sequence}'. Starting audited digital twin simulation.")
+                
+                # Audit Trail - Log Simulation Invocation
+                try:
+                    conn = psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+                    ImmutableAuditLedger.create_log_entry(conn, "SIMULATION_INVOCATION", {
+                        "design_id": design_id,
+                        "complexity": complexity,
+                        "consent_token": consent_token,
+                        "timestamp": time.time()
+                    })
+                    conn.close()
+                except Exception as audit_err:
+                    logger.error(f"Failed to log simulation invocation: {audit_err}")
+
+                # 3a. Biosecurity Regulatory Compliance Check (澳洲集团/CDC Select Agent screening)
+                is_cleared, biosecurity_violations = ComplianceValidator.screen_biosecurity(raw_sequence)
+                biosecurity_status = "CLEARED" if is_cleared else "BLOCKED"
+                
+                sequence = raw_sequence
+                if not is_cleared:
+                    logger.warning(f"[{design_id}] Biosecurity violation detected! Flagged matches: {biosecurity_violations}")
+                    sequence = "[BLOCKED - BIOSECURITY THREAT FLAG]"
+                    biosecurity_status = "BLOCKED"
                 
                 # 0. Automated Structure Prediction and Interaction Validation
-                descriptors = run_structure_prediction_pipeline(sequence, design_id)
+                descriptors = run_structure_prediction_pipeline(sequence if is_cleared else "AAAAA", design_id)
                 logger.info(f"[{design_id}] Quantitative descriptors feed forward into downstream simulation stages.")
                 time.sleep(1.0)
 
@@ -250,8 +371,6 @@ def main():
                 logger.info(f"[{design_id}] Instantiating Digital Twin Sandbox...")
                 sandbox = DigitalTwinSandbox()
                 
-                target_protein = peptide_data.get("target_protein", "mTOR")
-                disease_state = peptide_data.get("disease_state", "Unknown")
                 targets = [t.strip() for t in target_protein.replace("/", ",").split(",") if t.strip()]
                 if not targets:
                     targets = ["mTOR"]
@@ -272,7 +391,7 @@ def main():
                 
                 # Propagate peptide perturbations
                 descriptors["free_energy"] = float(-abs(final_pot_energy) * 0.1) # augment descriptors with physics
-                recovery_score = sandbox.simulate_peptide(sequence, descriptors)
+                recovery_score = sandbox.simulate_peptide(sequence if is_cleared else "AAAAA", descriptors)
                 
                 logger.info(f"[{design_id}] Digital Twin simulation resolved. Deficit recovery score: {recovery_score:.4f}")
                 deficit_recovery = 1.0 - recovery_score # for compatibility with existing stability calculation
@@ -282,8 +401,13 @@ def main():
                 binding_affinity = -7.5 - abs(final_pot_energy) * 0.1
                 stability = max(0.60, min(0.99, 1.0 - deficit_recovery))
                 
+                # Inject Differential Privacy Laplace Noise during Inference
+                dp_binding_affinity = DifferentialPrivacyManager.inject_laplace_noise(binding_affinity, sensitivity=1.0, epsilon=epsilon)
+                dp_stability = DifferentialPrivacyManager.inject_laplace_noise(stability, sensitivity=0.1, epsilon=epsilon)
+                dp_stability = max(0.0, min(1.0, dp_stability))
+                
                 # Efficacy and Risk ML Quantification Suite
-                seq_features = SequenceFeatureExtractor.extract_features(sequence)
+                seq_features = SequenceFeatureExtractor.extract_features(sequence if is_cleared else "AAAAA")
                 struct_metrics = {
                     "free_energy": float(descriptors.get("free_energy", -5.0)),
                     "binding_stability": float(stability),
@@ -311,12 +435,23 @@ def main():
                     for node in required_nodes:
                         trajectory_summaries[f"{node}_activity_mean"] = 0.1
                         trajectory_summaries[f"{node}_activity_std"] = 0.02
-
+ 
                 logger.info(f"[{design_id}] Ingesting concatenated feature vectors for efficacy and risk quantification...")
                 er_results = efficacy_risk_model.predict(seq_features, struct_metrics, trajectory_summaries)
                 
                 # Generate regulatory grade report
                 report_md = generate_regulatory_grade_report(design_id, sequence, er_results)
+                
+                # Append biosecurity screening results to report
+                report_md += f"\n\n### 5. BIOSECURITY & DATA GOVERNANCE SCREENING\n"
+                report_md += f"*   **Biosecurity Screening Status:** **{biosecurity_status}**\n"
+                if not is_cleared:
+                    report_md += f"*   **Violations Flagged:** {', '.join(biosecurity_violations)}\n"
+                    report_md += f"*   **Action:** Synthesis code generation blocked under Australia Group common control guidelines.\n"
+                else:
+                    report_md += f"*   **Violations Flagged:** None. Passed Australia Group and CDC Select Agent DNA screening checklists.\n"
+                report_md += f"*   **E2EE Query Mode:** {'Enabled (AES-256-GCM)' if is_encrypted else 'Disabled (Plaintext)'}\n"
+                report_md += f"*   **Differential Privacy inference noise:** Enabled (Epsilon={epsilon})\n"
                 
                 # Save the report to local file
                 report_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"regulatory_report_{design_id}.md")
@@ -326,10 +461,24 @@ def main():
                     logger.info(f"[{design_id}] Regulatory grade report generated: {report_path}")
                 except Exception as report_err:
                     logger.error(f"Failed to write regulatory report: {report_err}")
-
+ 
                 # Generate production solid phase synthesis script
-                synthesis_script = generate_synthesis_script(sequence, design_id)
+                if is_cleared:
+                    synthesis_script = generate_synthesis_script(sequence, design_id)
+                else:
+                    synthesis_script = f"# BLOCKED BY DATA GOVERNANCE SYSTEM\n# Sequence: {raw_sequence}\n# Reason: {', '.join(biosecurity_violations)}"
                 
+                # Generate cryptographic Provenance Token mapping Prompt -> NLP -> Diffusion -> Simulation -> Candidate
+                diffusion_latent_hash = hashlib.sha256(f"latent_{design_id}".encode('utf-8')).hexdigest()
+                prov_data = ProvenanceTracker.generate_provenance_token(
+                    prompt=prompt,
+                    nlp_entities={"disease": disease_state, "target": target_protein},
+                    diffusion_latent_hash=diffusion_latent_hash,
+                    simulation_id=f"sim_{design_id}",
+                    final_sequence=sequence
+                )
+                provenance_token = prov_data["provenance_token"]
+
                 # Save results to PostgreSQL
                 update_database_results(
                     design_id=design_id,
@@ -342,9 +491,16 @@ def main():
                     ti_upper=er_results["therapeutic_index"]["conformal_interval"][1],
                     adverse_events=json.dumps(er_results["adverse_events"]),
                     dose_response=json.dumps(er_results["dose_response"]),
-                    compliance_report=report_md
+                    compliance_report=report_md,
+                    is_encrypted=is_encrypted,
+                    provenance_token=provenance_token,
+                    biosecurity_status=biosecurity_status,
+                    consent_token=consent_token,
+                    epsilon=epsilon,
+                    dp_binding_affinity=dp_binding_affinity,
+                    dp_stability=dp_stability
                 )
-                logger.info(f"Completed digital twin simulation for {design_id}. Target Binding: {binding_affinity:.2f} kcal/mol, Stability: {stability*100:.1f}%.")
+                logger.info(f"Completed digital twin simulation for {design_id}. Target Binding: {binding_affinity:.2f} kcal/mol, Stability: {stability*100:.1f}%."))
 
             except Exception as e:
                 logger.error(f"Error handling peptide message: {e}")
