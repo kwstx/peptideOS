@@ -2,12 +2,19 @@ import os
 import logging
 import asyncio
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
+import time
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import psycopg2
 from confluent_kafka import Producer
+import strawberry
+from strawberry.fastapi import GraphQLRouter
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from jose import JWTError, jwt
+from datetime import datetime, timedelta
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -27,6 +34,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Custom Middleware for Usage Metering
+class UsageMeteringMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start_time = time.time()
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        
+        # Track compute consumption for each prompt-to-simulation cycle
+        if request.url.path == "/api/v1/peptides/design" and request.method == "POST":
+            # Simulate compute units calculation
+            compute_units = 10.5 + process_time * 2
+            response.headers["X-Compute-Units"] = f"{compute_units:.2f}"
+            logger.info(f"Usage Metering: {compute_units:.2f} CU consumed for {request.url.path}")
+            
+        return response
+
+app.add_middleware(UsageMeteringMiddleware)
 
 # Kafka configuration from environment
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
@@ -62,6 +87,61 @@ def get_db_connection():
         logger.error(f"PostgreSQL connection failure: {e}")
         return None
 
+# OAuth 2.0 and RBAC configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "supersecretkey")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta if expires_delta else timedelta(minutes=15))
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+@app.post("/token")
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    # Dummy user authentication for demo purposes
+    if form_data.username == "admin" and form_data.password == "admin":
+        role = "admin"
+    elif form_data.username == "researcher" and form_data.password == "researcher":
+        role = "researcher"
+    else:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+        
+    access_token = create_access_token(data={"sub": form_data.username, "role": role})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        role: str = payload.get("role")
+        if username is None or role is None:
+            raise credentials_exception
+        return {"username": username, "role": role}
+    except JWTError:
+        raise credentials_exception
+
+def require_role(role: str):
+    def role_checker(current_user: dict = Depends(get_current_user)):
+        if current_user["role"] != role and current_user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        return current_user
+    return role_checker
+
+# Idempotency Setup
+idempotency_cache = {}
+
+def get_idempotency_key(idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")):
+    return idempotency_key
+
 # Schemas
 class DesignRequest(BaseModel):
     prompt: str
@@ -78,17 +158,57 @@ class SimulationResult(BaseModel):
     synthesis_script: str
     status: str
 
+# GraphQL Setup
+@strawberry.type
+class PeptideDesignType:
+    design_id: str
+    status: str
+    target_protein: str
+    prompt: str
+
+@strawberry.type
+class Query:
+    @strawberry.field
+    def get_design(self, design_id: str) -> PeptideDesignType:
+        conn = get_db_connection()
+        if not conn:
+            return PeptideDesignType(design_id=design_id, status="COMPLETED", target_protein="Mock", prompt="Mock prompt")
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT status, target_protein, prompt FROM designs WHERE design_id = %s;", (design_id,))
+            row = cursor.fetchone()
+            if row:
+                return PeptideDesignType(design_id=design_id, status=row[0], target_protein=row[1], prompt=row[2])
+            cursor.close()
+            conn.close()
+        except Exception:
+            pass
+        return PeptideDesignType(design_id=design_id, status="UNKNOWN", target_protein="", prompt="")
+
+schema = strawberry.Schema(query=Query)
+graphql_app = GraphQLRouter(schema)
+app.include_router(graphql_app, prefix="/graphql")
+
 # Endpoints
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "service": "gateway-service"}
 
 @app.post("/api/v1/peptides/design")
-async def trigger_peptide_design(request: DesignRequest):
+async def trigger_peptide_design(
+    request: DesignRequest, 
+    idempotency_key: Optional[str] = Depends(get_idempotency_key),
+    current_user: dict = Depends(require_role("researcher"))
+):
     """
     Triggers de novo peptide design by pushing a prompt message onto Apache Kafka.
     This decouples the request and initiates the asynchronous diffusion and simulation pipeline.
     """
+    # Check idempotency
+    if idempotency_key and idempotency_key in idempotency_cache:
+        logger.info(f"Returning cached response for idempotency key: {idempotency_key}")
+        return idempotency_cache[idempotency_key]
+
     design_id = f"pep_{int(asyncio.get_event_loop().time() * 1000)}"
     
     # Save initial metadata to PostgreSQL
@@ -135,14 +255,20 @@ async def trigger_peptide_design(request: DesignRequest):
         # Fallback simulation in separate task if Kafka is missing in local development
         asyncio.create_task(simulate_fallback_pipeline(payload))
         
-    return {
+    response = {
         "status": "QUEUED",
         "design_id": design_id,
         "message": "Peptide design request successfully queued for processing."
     }
 
+    # Store in idempotency cache
+    if idempotency_key:
+        idempotency_cache[idempotency_key] = response
+
+    return response
+
 @app.get("/api/v1/peptides/{design_id}")
-def get_peptide_design(design_id: str):
+def get_peptide_design(design_id: str, current_user: dict = Depends(get_current_user)):
     """
     Retrieves metadata and results for a specific design job from PostgreSQL, including Efficacy & Risk conformal predictions.
     """
@@ -189,6 +315,36 @@ def get_peptide_design(design_id: str):
         logger.error(f"Database query error: {e}")
         if conn: conn.close()
         return get_mock_design_result(design_id)
+
+@app.get("/api/v1/peptides/{design_id}/long-poll")
+async def long_poll_design_status(design_id: str, timeout: int = 30, current_user: dict = Depends(get_current_user)):
+    """Long-polling mechanism for real-time progress updates during extended simulations"""
+    start_time = asyncio.get_event_loop().time()
+    
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        conn = get_db_connection()
+        status = "PENDING"
+        if conn:
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT status FROM designs WHERE design_id = %s;", (design_id,))
+                row = cursor.fetchone()
+                if row:
+                    status = row[0]
+                cursor.close()
+                conn.close()
+            except Exception:
+                pass
+        else:
+            # mock behavior: just return completed if we have no DB
+            status = "COMPLETED"
+
+        if status in ["COMPLETED", "FAILED"]:
+            return {"design_id": design_id, "status": status, "message": "Simulation cycle finished."}
+            
+        await asyncio.sleep(2)
+        
+    return {"design_id": design_id, "status": "PENDING", "message": "Long-poll timeout reached, continue polling."}
 
 # WebSocket connection manager for live digital twin telemetry
 class ConnectionManager:
