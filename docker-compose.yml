@@ -125,5 +125,23 @@ services:
     ports:
       - "8004:8004"
 
+  # Synthesis-Ready Output Subsystem
+  synthesis:
+    build:
+      context: ./services/synthesis
+      dockerfile: Dockerfile
+    container_name: peptiprompt-synthesis
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DB_HOST=postgres
+      - DB_NAME=peptiprompt
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+
 volumes:
   pgdata:
