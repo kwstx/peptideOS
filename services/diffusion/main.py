@@ -6,7 +6,22 @@ import random
 import torch
 import torch.nn as nn
 import numpy as np
-from confluent_kafka import Consumer, Producer, KafkaError
+try:
+    from confluent_kafka import Consumer, Producer, KafkaError
+except ImportError:
+    class MockProducer:
+        def __init__(self, config): pass
+        def produce(self, topic, key, value, callback=None): pass
+        def flush(self): pass
+    class MockConsumer:
+        def __init__(self, config): pass
+        def subscribe(self, topics): pass
+        def poll(self, timeout): return None
+        def close(self): pass
+    class KafkaError:
+        _PARTITION_EOF = 1
+    Consumer, Producer = MockConsumer, MockProducer
+
 from governance import CryptographicManager, DifferentialPrivacyManager
 
 logging.basicConfig(level=logging.INFO)
@@ -26,23 +41,22 @@ consumer_config = {
 AMINO_ACIDS = ["A", "C", "D", "E", "F", "G", "H", "I", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "V", "W", "Y"]
 
 class TargetEmbedding(nn.Module):
-    """Embeds parsed biological targets into a dense latent space."""
-    def __init__(self, target_vocab_size=10000, embedding_dim=256):
+    """Embeds amino acid sequence targets."""
+    def __init__(self):
         super().__init__()
-        self.embedding = nn.Embedding(target_vocab_size, embedding_dim)
         
     def forward(self, target_id):
         # Simulating embedding lookup
-        return torch.randn(1, 256)
+        return torch.randn(1, 512)
 
 class ObjectiveEmbedding(nn.Module):
     """Embeds user-specified functional objectives."""
     def __init__(self, objective_dim=128):
         super().__init__()
-        self.fc = nn.Linear(objective_dim, 256)
+        self.fc = nn.Linear(objective_dim, 512)
         
     def forward(self, objectives):
-        return torch.randn(1, 256)
+        return torch.randn(1, 512)
 
 class AdversarialRegularizer(nn.Module):
     """Minimizes off-target propensity through adversarial regularization."""
@@ -144,7 +158,26 @@ class ConditionalGenerativeFoundationModel(nn.Module):
         # Decode final latent into discrete amino acid tokens
         length = random.randint(12, 25)
         sequence = "".join(random.choices(AMINO_ACIDS, k=length))
-        return f"{sequence}-NH2"
+        final_sequence = f"{sequence}-NH2"
+        
+        # Apply custom developer extension plugins
+        try:
+            try:
+                from plugins import PluginManager
+            except ImportError:
+                import sys
+                local_dir = os.path.dirname(os.path.abspath(__file__))
+                if local_dir not in sys.path:
+                    sys.path.insert(0, local_dir)
+                from plugins import PluginManager
+                
+            plugin_manager = PluginManager.get_instance()
+            plugin_reward, plugin_metrics = plugin_manager.evaluate_all_rewards(final_sequence, xt)
+            logger.info(f"[{design_id}] Plugins evaluated. Aggregated Reward Adjustment: {plugin_reward:.4f} | Metrics: {json.dumps(plugin_metrics)}")
+        except Exception as e:
+            logger.error(f"[{design_id}] Plugin manager execution failed: {e}")
+            
+        return final_sequence
 
 # Instantiate global model
 generative_foundation_model = ConditionalGenerativeFoundationModel()

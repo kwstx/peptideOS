@@ -349,8 +349,11 @@ class EnsembleEfficacyRiskModel:
             # Calibrate using class-conditional conformal classification (LAC method)
             # We want to find a threshold on the probability such that when an event occurs, 
             # we include it in the prediction set with probability 1 - alpha.
-            # Extract predicted probabilities of event occurring (class 1) on calibration set
-            cal_probs = clf.predict_proba(X_cal)[:, 1]
+            probs = clf.predict_proba(X_cal)
+            if probs.shape[1] > 1:
+                cal_probs = probs[:, 1]
+            else:
+                cal_probs = np.ones(X_cal.shape[0]) if clf.classes_[0] == 1 else np.zeros(X_cal.shape[0])
             
             # Filter to calibration samples where the event ACTUALLY occurred
             active_cal_indices = np.where(y_rw_cal[:, e_idx] == 1)[0]
@@ -443,7 +446,11 @@ class EnsembleEfficacyRiskModel:
         
         for e_idx, clf in enumerate(self.adverse_classifiers):
             event_name = self.adverse_event_names[e_idx]
-            prob = float(clf.predict_proba(X_test)[0, 1])
+            probs = clf.predict_proba(X_test)
+            if probs.shape[1] > 1:
+                prob = float(probs[0, 1])
+            else:
+                prob = float(1.0 if clf.classes_[0] == 1 else 0.0)
             adverse_probabilities[event_name] = prob
             
             # Check if event is in conformal set

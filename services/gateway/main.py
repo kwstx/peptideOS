@@ -43,19 +43,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Custom Middleware for Usage Metering
+# Custom Middleware for Usage Metering and Observability
 class UsageMeteringMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
         response = await call_next(request)
         process_time = time.time() - start_time
         
-        # Track compute consumption for each prompt-to-simulation cycle
+        # Track compute consumption and record metrics for each prompt-to-simulation cycle
         if request.url.path == "/api/v1/peptides/design" and request.method == "POST":
             # Simulate compute units calculation
             compute_units = 10.5 + process_time * 2
             response.headers["X-Compute-Units"] = f"{compute_units:.2f}"
             logger.info(f"Usage Metering: {compute_units:.2f} CU consumed for {request.url.path}")
+            
+            # Record observability statistics
+            try:
+                from observability import ObservabilityMetricsTracker
+                tracker = ObservabilityMetricsTracker.get_instance()
+                success = response.status_code == 200
+                tracker.record_request(latency=process_time, success=success)
+            except Exception as e:
+                logger.error(f"Failed to record observability metrics: {e}")
             
         return response
 
@@ -362,6 +371,16 @@ def get_peptide_design(design_id: str, current_user: dict = Depends(get_current_
             (design_id,)
         )
         row = cursor.fetchone()
+        
+        # Record completed design metrics for drift tracking
+        if row and row[4] == "COMPLETED" and row[5]:
+            try:
+                from observability import ObservabilityMetricsTracker
+                tracker = ObservabilityMetricsTracker.get_instance()
+                tracker.record_generated_peptide(row[5], float(row[6]) if row[6] is not None else 0.0)
+            except Exception as e:
+                logger.error(f"Failed to record generated peptide in observability: {e}")
+                
         cursor.close()
         conn.close()
         
@@ -444,6 +463,28 @@ class ConnectionManager:
             await connection.send_text(message)
 
 manager = ConnectionManager()
+
+@app.get("/api/v1/observability/metrics")
+def get_system_metrics():
+    """Exposes real-time throughput and latency metrics for Prometheus/observability stacks."""
+    try:
+        from observability import ObservabilityMetricsTracker
+        tracker = ObservabilityMetricsTracker.get_instance()
+        return tracker.get_metrics_payload()
+    except Exception as e:
+        logger.error(f"Failed to fetch metrics: {e}")
+        return {"error": str(e)}
+
+@app.get("/api/v1/observability/drift")
+def get_model_drift():
+    """Computes model/data drift indicators (sequence length drift, token distributions shift)."""
+    try:
+        from observability import ObservabilityMetricsTracker
+        tracker = ObservabilityMetricsTracker.get_instance()
+        return tracker.get_drift_payload()
+    except Exception as e:
+        logger.error(f"Failed to fetch drift metrics: {e}")
+        return {"error": str(e)}
 
 @app.get("/api/v1/governance/audit-logs")
 def get_audit_logs(current_user: dict = Depends(get_current_user)):

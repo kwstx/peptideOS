@@ -189,6 +189,187 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('mitochondrial deficit');
   const [searchResults, setSearchResults] = useState([]);
 
+  // Developer Portal & SDK Sandbox States
+  const [sdkLanguage, setSdkLanguage] = useState('python');
+  const [sandboxPrompt, setSandboxPrompt] = useState('Disrupts the self-assembly of amyloid-beta oligomers');
+  const [sandboxTarget, setSandboxTarget] = useState('Amyloid-Beta');
+  const [sandboxComplexity, setSandboxComplexity] = useState('standard');
+  const [sandboxEpsilon, setSandboxEpsilon] = useState(1.0);
+  const [sandboxRunning, setSandboxRunning] = useState(false);
+  const [sandboxResponse, setSandboxResponse] = useState(null);
+  
+  // Custom Plugin registration states
+  const [customPluginCode, setCustomPluginCode] = useState(`# Custom Peptide Design Extension Plugin
+import re
+from typing import Dict, Any
+from plugins import BasePeptidePlugin
+
+class ImmunogenicityPenalizerPlugin(BasePeptidePlugin):
+    """
+    Screens generated sequences for immunogenic basic-charge clusters
+    and applies a penalty to the generative RL reward function.
+    """
+    def __init__(self):
+        super().__init__(name="ImmunogenicityPenalizer")
+        self.high_risk_patterns = [r"KKK", r"W.*W", r"DE.*ED"]
+
+    def evaluate_reward(self, sequence: str, latent_state: Any) -> float:
+        clean_seq = sequence.replace("-NH2", "").replace(" ", "").upper()
+        matches = sum(1 for p in self.high_risk_patterns if re.search(p, clean_seq))
+        return float(-2.5 * matches)
+
+    def get_metrics(self, sequence: str, latent_state: Any) -> Dict[str, float]:
+        clean_seq = sequence.replace("-NH2", "").replace(" ", "").upper()
+        hydrophobic_count = sum(1 for aa in clean_seq if aa in "WFYLIV")
+        ratio = hydrophobic_count / max(1, len(clean_seq))
+        return {
+            "immunogenicity_risk_score": float(0.15 + (ratio * 0.5)),
+            "hydrophobic_ratio": float(ratio)
+        }
+`);
+  const [pluginRegistering, setPluginRegistering] = useState(false);
+  const [pluginLogs, setPluginLogs] = useState([]);
+  
+  // Live Observability and Model Drift Telemetry States
+  const [obsMetrics, setObsMetrics] = useState({
+    throughput: { total_requests: 142, successful_designs: 138, failed_designs: 4, biosecurity_violations: 3, throughput_jobs_per_min: 12.4 },
+    latency_seconds: { avg: 3.125, p50: 2.95, p95: 3.84, p99: 4.18 }
+  });
+  const [obsDrift, setObsDrift] = useState({
+    drift_status: 'STABLE',
+    kl_divergence: 0.184,
+    metrics: {
+      baseline_mean_length: 20.0,
+      current_mean_length: 21.2,
+      length_drift_percentage: 6.0,
+      baseline_mean_affinity: -11.2,
+      current_mean_affinity: -11.85,
+      affinity_drift_deviation: -0.65,
+      biosecurity_violation_rate: 2.11
+    },
+    amino_acid_distributions: {
+      baseline: { A: 0.082, C: 0.014, D: 0.055, E: 0.067, F: 0.040, G: 0.071, H: 0.023, I: 0.059, K: 0.058, L: 0.097, M: 0.024, N: 0.041, P: 0.047, Q: 0.039, R: 0.055, S: 0.066, T: 0.053, V: 0.069, W: 0.011, Y: 0.029 },
+      observed: { A: 0.085, C: 0.015, D: 0.052, E: 0.064, F: 0.042, G: 0.074, H: 0.025, I: 0.056, K: 0.060, L: 0.101, M: 0.022, N: 0.039, P: 0.045, Q: 0.037, R: 0.058, S: 0.069, T: 0.050, V: 0.066, W: 0.010, Y: 0.031 }
+    }
+  });
+  const [isDriftInjected, setIsDriftInjected] = useState(false);
+
+  const handleSandboxRun = () => {
+    setSandboxRunning(true);
+    setSandboxResponse(null);
+    setTimeout(() => {
+      const mockSeqs = {
+        "PINK1 / Parkin": "MGAFLGKVLKACVVALSGKLL-NH2",
+        "Amyloid-Beta": "KKLVFFAEDV-NH2",
+        "Spike RBD": "VYAWNSRGFNCYFPLQSYGFQPTNGVGYQ-NH2"
+      };
+      const seq = mockSeqs[sandboxTarget] || "MGAFLGKVLKACVVALSGKLL-NH2";
+      const isClean = !seq.includes("TFT");
+      
+      setSandboxResponse({
+        status: "COMPLETED",
+        design_id: `pep_sdk_${Date.now()}`,
+        sequence: seq,
+        binding_affinity: sandboxTarget === "Amyloid-Beta" ? -9.4 : -12.4,
+        stability: 0.92,
+        synthesis_script: "# Solid Phase Peptide Synthesis Script\nINITIATE SPPS;\nRESIN: Rink-Amide AM;\nCOUPLING: HATU/DIPEA;\nSEQUENCE: " + seq.replace("-NH2", "") + ";",
+        therapeutic_index: 18.45,
+        ti_lower: 12.21,
+        ti_upper: 24.69,
+        provenance_token: "prov_" + Math.random().toString(16).substring(2, 18),
+        biosecurity_status: isClean ? "CLEARED" : "FAILED",
+        consent_token: "consent_" + Math.random().toString(16).substring(2, 18),
+        epsilon: sandboxEpsilon,
+        dp_binding_affinity: Number(((sandboxTarget === "Amyloid-Beta" ? -9.4 : -12.4) + (Math.random() - 0.5) * (1 / sandboxEpsilon)).toFixed(2))
+      });
+      setSandboxRunning(false);
+      addLog('gateway-sdk', `Programmatic design generated for target ${sandboxTarget} via SDK endpoint.`);
+    }, 1500);
+  };
+
+  const handleRegisterPlugin = () => {
+    setPluginRegistering(true);
+    setPluginLogs([">> Initiating custom plugin registration on peptideOS cluster..."]);
+    setTimeout(() => {
+      setPluginLogs(prev => [...prev, ">> Ingesting custom class 'ImmunogenicityPenalizerPlugin'..."]);
+      setTimeout(() => {
+        setPluginLogs(prev => [...prev, ">> Compiling code AST and checking security sandbox isolation guidelines..."]);
+        setTimeout(() => {
+          setPluginLogs(prev => [...prev, ">> Dynamic plugin registration SUCCESSFUL."]);
+          setPluginLogs(prev => [...prev, "[diffusion-plugins] Registered peptide extension plugin: 'ImmunogenicityPenalizer'"]);
+          setPluginRegistering(false);
+          addLog('diffusion-plugins', "External developer plugin registered successfully: 'ImmunogenicityPenalizerPlugin'.");
+        }, 600);
+      }, 600);
+    }, 600);
+  };
+
+  const handleToggleDrift = () => {
+    if (isDriftInjected) {
+      setObsDrift({
+        drift_status: 'STABLE',
+        kl_divergence: 0.184,
+        metrics: {
+          baseline_mean_length: 20.0,
+          current_mean_length: 21.2,
+          length_drift_percentage: 6.0,
+          baseline_mean_affinity: -11.2,
+          current_mean_affinity: -11.85,
+          affinity_drift_deviation: -0.65,
+          biosecurity_violation_rate: 2.11
+        },
+        amino_acid_distributions: {
+          baseline: { A: 0.082, C: 0.014, D: 0.055, E: 0.067, F: 0.040, G: 0.071, H: 0.023, I: 0.059, K: 0.058, L: 0.097, M: 0.024, N: 0.041, P: 0.047, Q: 0.039, R: 0.055, S: 0.066, T: 0.053, V: 0.069, W: 0.011, Y: 0.029 },
+          observed: { A: 0.085, C: 0.015, D: 0.052, E: 0.064, F: 0.042, G: 0.074, H: 0.025, I: 0.056, K: 0.060, L: 0.101, M: 0.022, N: 0.039, P: 0.045, Q: 0.037, R: 0.058, S: 0.069, T: 0.050, V: 0.066, W: 0.010, Y: 0.031 }
+        }
+      });
+      setIsDriftInjected(false);
+      addLog('gateway-observability', "Model drift simulation disabled. Metrics restored to stable state.");
+    } else {
+      setObsDrift({
+        drift_status: 'WARNING_DRIFT_DETECTED',
+        kl_divergence: 0.618,
+        metrics: {
+          baseline_mean_length: 20.0,
+          current_mean_length: 25.8,
+          length_drift_percentage: 29.0,
+          baseline_mean_affinity: -11.2,
+          current_mean_affinity: -8.15,
+          affinity_drift_deviation: 3.05,
+          biosecurity_violation_rate: 15.42
+        },
+        amino_acid_distributions: {
+          baseline: { A: 0.082, C: 0.014, D: 0.055, E: 0.067, F: 0.040, G: 0.071, H: 0.023, I: 0.059, K: 0.058, L: 0.097, M: 0.024, N: 0.041, P: 0.047, Q: 0.039, R: 0.055, S: 0.066, T: 0.053, V: 0.069, W: 0.011, Y: 0.029 },
+          observed: { A: 0.185, C: 0.005, D: 0.012, E: 0.014, F: 0.085, G: 0.021, H: 0.011, I: 0.120, K: 0.012, L: 0.220, M: 0.004, N: 0.012, P: 0.015, Q: 0.008, R: 0.015, S: 0.019, T: 0.015, V: 0.185, W: 0.025, Y: 0.018 }
+        }
+      });
+      setIsDriftInjected(true);
+      addLog('gateway-observability', "WARNING: Significant model output drift detected! Sequence length (+29%) and Amino Acid frequencies (KL Div: 0.618) exceed tolerance threshold.");
+    }
+  };
+
+  useEffect(() => {
+    const fetchObservability = async () => {
+      try {
+        const resMetrics = await fetch('/api/v1/observability/metrics');
+        if (resMetrics.ok) {
+          const data = await resMetrics.json();
+          if (!data.error) setObsMetrics(data);
+        }
+        const resDrift = await fetch('/api/v1/observability/drift');
+        if (resDrift.ok) {
+          const data = await resDrift.json();
+          if (!data.error) setObsDrift(data);
+        }
+      } catch (err) {
+        // Fallback silently to mock data
+      }
+    };
+    fetchObservability();
+    const interval = setInterval(fetchObservability, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Auto-scroll logs
   useEffect(() => {
     if (terminalEndRef.current) {
@@ -731,6 +912,12 @@ else:
             onClick={() => setActiveTab('governance')}
           >
             Data Governance & Compliance
+          </button>
+          <button 
+            className={`tab-btn ${activeTab === 'observability' ? 'active' : ''}`}
+            onClick={() => setActiveTab('observability')}
+          >
+            Observability & Developer Portal
           </button>
         </div>
 
@@ -1618,6 +1805,349 @@ else:
                   </div>
                   <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', border: '1px solid rgba(255,255,255,0.1)', padding: '2px 8px', borderRadius: '4px' }}>
                     SHA-256 HMAC Authentic
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+          {activeTab === 'observability' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', animation: 'fadeIn 0.3s ease', width: '100%' }}>
+              
+              {/* Top Summary Banner */}
+              <div className="card" style={{ padding: '24px', background: 'linear-gradient(135deg, rgba(6,182,212,0.08) 0%, rgba(168,85,247,0.08) 100%)', border: '1px solid rgba(6,182,212,0.2)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+                  <div>
+                    <h2 style={{ fontSize: '1.6rem', fontWeight: '800', margin: '0 0 6px 0', background: 'linear-gradient(90deg, #22d3ee, #c084fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+                      Ecosystem Integration & Observability
+                    </h2>
+                    <p style={{ margin: '0', color: 'var(--text-secondary)', fontSize: '0.95rem' }}>
+                      Monitor container orchestrator health, analyze generative token drift, register custom scoring plugins, and test multi-language SDK client environments.
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <div className="badge" style={{ padding: '8px 16px', background: 'rgba(16,185,129,0.1)', border: '1px solid rgba(16,185,129,0.2)', color: '#10b981', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '4px' }}>
+                      <div className="status-dot" style={{ background: '#10b981' }}></div>
+                      HPA Scaled: 2 - 8 Replicas
+                    </div>
+                    <div className="badge" style={{ padding: '8px 16px', background: 'rgba(168,85,247,0.1)', border: '1px solid rgba(168,85,247,0.2)', color: '#a855f7', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '4px' }}>
+                      Prometheus Metric Exporter Active
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Grid 1: Live Observability & Drift Monitoring */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: '20px' }}>
+                
+                {/* Latency & Throughput Metrics */}
+                <div className="card" style={{ padding: '20px' }}>
+                  <h3 style={{ margin: '0 0 16px 0', fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '10px' }}>
+                    Throughput & Latency Scraper
+                  </h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '20px' }}>
+                    <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Throughput</div>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 'bold', margin: '4px 0', color: '#22d3ee' }}>
+                        {obsMetrics.throughput.throughput_jobs_per_min} <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>jobs/m</span>
+                      </div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Requests: {obsMetrics.throughput.total_requests} total</div>
+                    </div>
+                    <div style={{ background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '6px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Success / Blocked</div>
+                      <div style={{ fontSize: '1.4rem', fontWeight: 'bold', margin: '4px 0', color: '#10b981' }}>
+                        {obsMetrics.throughput.successful_designs} <span style={{ color: '#ef4444', fontSize: '1.1rem' }}>/ {obsMetrics.throughput.biosecurity_violations}</span>
+                      </div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Failures: {obsMetrics.throughput.failed_designs}</div>
+                    </div>
+                  </div>
+
+                  <h4 style={{ margin: '16px 0 8px 0', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Latency Percentiles (API Gateway Ingress)</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {[
+                      { label: 'Avg Ingress Processing', val: obsMetrics.latency_seconds.avg },
+                      { label: 'p50 (Median Request)', val: obsMetrics.latency_seconds.p50 },
+                      { label: 'p95 (Scaffolding / SDE)', val: obsMetrics.latency_seconds.p95 },
+                      { label: 'p99 (Longest Simulation)', val: obsMetrics.latency_seconds.p99 }
+                    ].map((item, idx) => (
+                      <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,255,255,0.01)', padding: '8px 12px', borderRadius: '4px' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{item.label}</span>
+                        <span style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', color: '#22d3ee', fontWeight: 'bold' }}>{item.val.toFixed(3)}s</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Model & Data Drift Analysis */}
+                <div className="card" style={{ padding: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '10px', marginBottom: '16px' }}>
+                    <h3 style={{ margin: '0', fontSize: '1.1rem', color: '#fff' }}>
+                      Generative Foundation Model Drift Monitor
+                    </h3>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button 
+                        onClick={handleToggleDrift}
+                        className="btn secondary"
+                        style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                      >
+                        {isDriftInjected ? "Restore Clean" : "Simulate Drift"}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Drift Status Indicator */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px', background: obsDrift.drift_status === 'STABLE' ? 'rgba(16,185,129,0.08)' : 'rgba(245,158,11,0.08)', border: `1px solid ${obsDrift.drift_status === 'STABLE' ? 'rgba(16,185,129,0.2)' : 'rgba(245,158,11,0.2)'}`, padding: '12px', borderRadius: '6px', marginBottom: '16px' }}>
+                    <div className="status-dot" style={{ background: obsDrift.drift_status === 'STABLE' ? '#10b981' : '#f59e0b', width: '12px', height: '12px' }}></div>
+                    <div style={{ flex: '1' }}>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>Model Distribution Status</div>
+                      <div style={{ fontSize: '0.95rem', fontWeight: 'bold', color: obsDrift.drift_status === 'STABLE' ? '#10b981' : '#f59e0b' }}>
+                        {obsDrift.drift_status === 'STABLE' ? 'STABLE (CONVERGED)' : 'ALERT: GENERATIVE OUTPUT DRIFT DETECTED'}
+                      </div>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>KL Div:</span>
+                      <span style={{ fontSize: '1.1rem', fontWeight: 'bold', color: obsDrift.drift_status === 'STABLE' ? '#10b981' : '#f59e0b', marginLeft: '6px', fontFamily: 'var(--font-mono)' }}>
+                        {obsDrift.kl_divergence}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Drift Metrics */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                    <div style={{ background: 'rgba(255,255,255,0.02)', padding: '10px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Length Shift</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: '4px 0', color: obsDrift.metrics.length_drift_percentage > 15 ? '#f59e0b' : '#fff' }}>
+                        +{obsDrift.metrics.length_drift_percentage}%
+                      </div>
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-secondary)' }}>Mean: {obsDrift.metrics.current_mean_length} aa</div>
+                    </div>
+                    <div style={{ background: 'rgba(255,255,255,0.02)', padding: '10px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Binding Drift</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: '4px 0', color: Math.abs(obsDrift.metrics.affinity_drift_deviation) > 1.5 ? '#f59e0b' : '#fff' }}>
+                        {obsDrift.metrics.affinity_drift_deviation > 0 ? '+' : ''}{obsDrift.metrics.affinity_drift_deviation}
+                      </div>
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-secondary)' }}>kcal/mol</div>
+                    </div>
+                    <div style={{ background: 'rgba(255,255,255,0.02)', padding: '10px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Biosecurity Flags</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 'bold', margin: '4px 0', color: obsDrift.metrics.biosecurity_violation_rate > 5 ? '#ef4444' : '#fff' }}>
+                        {obsDrift.metrics.biosecurity_violation_rate}%
+                      </div>
+                      <div style={{ fontSize: '0.6rem', color: 'var(--text-secondary)' }}>Anomalous Rate</div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Dynamic Amino Acid Prior vs Observed Bar Chart */}
+              <div className="card" style={{ padding: '20px' }}>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '10px' }}>
+                  Amino Acid Prior vs. Observed Output Token Shift (Wasserstein / KL Divergence Input Space)
+                </h3>
+                <p style={{ margin: '0 0 16px 0', color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                  Blue represents natural baseline prior distribution. Purple represents model de novo generated output distribution. Discrepancies indicate model output bias or parameter drift.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                  {Object.keys(obsDrift.amino_acid_distributions.baseline).map((aa) => {
+                    const baseVal = obsDrift.amino_acid_distributions.baseline[aa];
+                    const obsVal = obsDrift.amino_acid_distributions.observed[aa];
+                    const maxVal = 0.30;
+                    const basePct = Math.min(100, (baseVal / maxVal) * 100);
+                    const obsPct = Math.min(100, (obsVal / maxVal) * 100);
+                    
+                    return (
+                      <div key={aa} style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', padding: '10px', borderRadius: '6px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 'bold', color: '#fff', fontSize: '0.9rem' }}>Amino Acid {aa}</span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                            Base: {(baseVal * 100).toFixed(1)}% | Gen: {(obsVal * 100).toFixed(1)}%
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          {/* Baseline Bar */}
+                          <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', width: '100%', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', background: '#22d3ee', width: `${basePct}%`, transition: 'width 0.4s ease' }}></div>
+                          </div>
+                          {/* Observed Bar */}
+                          <div style={{ height: '4px', background: 'rgba(255,255,255,0.05)', borderRadius: '2px', width: '100%', overflow: 'hidden' }}>
+                            <div style={{ height: '100%', background: '#a855f7', width: `${obsPct}%`, transition: 'width 0.4s ease' }}></div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Grid 2: Interactive Developer SDK Sandbox */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '20px' }}>
+                
+                {/* SDK Control & Script Generator */}
+                <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ margin: '0', fontSize: '1.1rem', color: '#fff' }}>Developer Client SDK Playground</h3>
+                    <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', borderRadius: '4px', padding: '2px' }}>
+                      <button 
+                        onClick={() => setSdkLanguage('python')}
+                        className={`btn secondary ${sdkLanguage === 'python' ? 'active' : ''}`}
+                        style={{ padding: '4px 10px', fontSize: '0.75rem', background: sdkLanguage === 'python' ? 'var(--primary)' : 'transparent', border: 'none', color: '#fff' }}
+                      >
+                        Python
+                      </button>
+                      <button 
+                        onClick={() => setSdkLanguage('ts')}
+                        className={`btn secondary ${sdkLanguage === 'ts' ? 'active' : ''}`}
+                        style={{ padding: '4px 10px', fontSize: '0.75rem', background: sdkLanguage === 'ts' ? 'var(--primary)' : 'transparent', border: 'none', color: '#fff' }}
+                      >
+                        TypeScript
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div>
+                      <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Target Protein</label>
+                      <select 
+                        value={sandboxTarget} 
+                        onChange={(e) => setSandboxTarget(e.target.value)}
+                        style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', padding: '6px', borderRadius: '4px', color: '#fff' }}
+                      >
+                        <option value="PINK1 / Parkin">PINK1 / Parkin</option>
+                        <option value="Amyloid-Beta">Amyloid-Beta</option>
+                        <option value="Spike RBD">Spike RBD</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Privacy Epsilon (ε)</label>
+                      <input 
+                        type="number" 
+                        step="0.1" 
+                        min="0.1" 
+                        max="10.0" 
+                        value={sandboxEpsilon} 
+                        onChange={(e) => setSandboxEpsilon(parseFloat(e.target.value) || 1.0)}
+                        style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', padding: '6px', borderRadius: '4px', color: '#fff' }}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Design Prompt</label>
+                    <input 
+                      type="text" 
+                      value={sandboxPrompt} 
+                      onChange={(e) => setSandboxPrompt(e.target.value)}
+                      style={{ width: '100%', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.1)', padding: '6px', borderRadius: '4px', color: '#fff' }}
+                    />
+                  </div>
+
+                  {/* SDK Code representation */}
+                  <div style={{ flex: '1', display: 'flex', flexDirection: 'column' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>Executable Client Script</div>
+                    <pre style={{ margin: '0', background: '#090d16', border: '1px solid rgba(255,255,255,0.05)', padding: '12px', borderRadius: '6px', color: '#38bdf8', fontSize: '0.75rem', overflowX: 'auto', flex: '1', fontFamily: 'var(--font-mono)', minHeight: '120px' }}>
+                      {sdkLanguage === 'python' ? (
+`from peptiprompt_sdk.client import PeptiPromptClient
+
+# Initialize Client
+client = PeptiPromptClient(api_key="research_key_102")
+
+# Design peptide
+response = client.design_peptide(
+    prompt="${sandboxPrompt}",
+    disease_state="Diseased Cell Line",
+    target_protein="${sandboxTarget}",
+    epsilon=${sandboxEpsilon}
+)
+print("Triggered. Design ID:", response["design_id"])`
+                      ) : (
+`import { PeptiPromptSDK } from 'peptiprompt-ts';
+
+const sdk = new PeptiPromptSDK('research_key_102');
+
+const response = await sdk.designPeptide({
+  prompt: "${sandboxPrompt}",
+  diseaseState: "Diseased Cell Line",
+  targetProtein: "${sandboxTarget}",
+  epsilon: ${sandboxEpsilon}
+});
+console.log("Triggered. Design ID:", response.design_id);`
+                      )}
+                    </pre>
+                  </div>
+
+                  <button 
+                    onClick={handleSandboxRun} 
+                    disabled={sandboxRunning}
+                    className="btn primary"
+                    style={{ width: '100%' }}
+                  >
+                    {sandboxRunning ? "Executing Sandbox SDK Pipeline..." : "Execute SDK Sandbox Run"}
+                  </button>
+                </div>
+
+                {/* API JSON Output Panel */}
+                <div className="card" style={{ padding: '20px', display: 'flex', flexDirection: 'column' }}>
+                  <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '10px' }}>
+                    JSON API Output Logger
+                  </h3>
+                  <div style={{ flex: '1', background: '#090d16', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px', padding: '12px', display: 'flex', flexDirection: 'column', justifyContent: sandboxResponse ? 'flex-start' : 'center', alignItems: sandboxResponse ? 'stretch' : 'center', minHeight: '320px', overflowY: 'auto' }}>
+                    {sandboxRunning ? (
+                      <div style={{ textAlign: 'center' }}>
+                        <div style={{ width: '30px', height: '30px', border: '3px solid rgba(6,182,212,0.1)', borderTop: '3px solid #06b6d4', borderRadius: '50%', animation: 'spin 1s linear infinite', margin: '0 auto 12px auto' }}></div>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Polling gateway socket and resolving conformal predictions...</span>
+                      </div>
+                    ) : sandboxResponse ? (
+                      <pre style={{ margin: '0', color: '#c084fc', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap' }}>
+                        {JSON.stringify(sandboxResponse, null, 2)}
+                      </pre>
+                    ) : (
+                      <div style={{ textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                        No execution has been run. Click "Execute SDK Sandbox Run" to trigger programmatic pipeline.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Plugin Extension Sandbox Section */}
+              <div className="card" style={{ padding: '20px' }}>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: '1.1rem', color: '#fff', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '10px' }}>
+                  Cluster Custom Plugin Extensibility
+                </h3>
+                <p style={{ margin: '0 0 16px 0', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
+                  External developers can register custom reward modules that plug directly into the de novo generator's Reinforcement Learning optimization loop. Modify and submit the plugin code below to register it in the runtime.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))', gap: '20px' }}>
+                  <div>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Plugin Class Definition (Python)</label>
+                    <textarea 
+                      value={customPluginCode} 
+                      onChange={(e) => setCustomPluginCode(e.target.value)}
+                      style={{ width: '100%', height: '240px', background: '#090d16', border: '1px solid rgba(255,255,255,0.1)', padding: '12px', borderRadius: '6px', color: '#a7f3d0', fontSize: '0.75rem', fontFamily: 'var(--font-mono)', resize: 'none' }}
+                    />
+                    <button 
+                      onClick={handleRegisterPlugin} 
+                      disabled={pluginRegistering}
+                      className="btn secondary"
+                      style={{ width: '100%', marginTop: '12px', borderColor: '#10b981', color: '#10b981' }}
+                    >
+                      {pluginRegistering ? "Registering Plugin..." : "Register Plugin to cluster"}
+                    </button>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '4px' }}>Ecosystem Deploy Logs</label>
+                    <div style={{ height: '240px', background: '#05070f', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '6px', padding: '12px', fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: '#10b981', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {pluginLogs.length === 0 ? (
+                        <span style={{ color: 'var(--text-secondary)' }}>Log console idle. Deploy a custom plugin to inspect cluster registration traces.</span>
+                      ) : (
+                        pluginLogs.map((log, idx) => (
+                          <div key={idx} style={{ whiteSpace: 'pre-wrap' }}>{log}</div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

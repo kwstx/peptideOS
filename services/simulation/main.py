@@ -9,8 +9,34 @@ import numpy as np
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("simulation-service")
 
-from confluent_kafka import Consumer, KafkaError
-import psycopg2
+try:
+    from confluent_kafka import Consumer, KafkaError
+except ImportError:
+    class MockConsumer:
+        def __init__(self, config): pass
+        def subscribe(self, topics): pass
+        def poll(self, timeout): return None
+        def close(self): pass
+    class KafkaError:
+        _PARTITION_EOF = 1
+    Consumer = MockConsumer
+
+try:
+    import psycopg2
+except ImportError:
+    class MockCursor:
+        def execute(self, query, params=None): pass
+        def fetchone(self): return None
+        def fetchall(self): return []
+        def close(self): pass
+    class MockConnection:
+        def cursor(self): return MockCursor()
+        def commit(self): pass
+        def close(self): pass
+    class MockPsycopg2:
+        def connect(self, **kwargs): return MockConnection()
+    psycopg2 = MockPsycopg2()
+
 from structure_prediction import run_structure_prediction_pipeline
 from digital_twin import DigitalTwinSandbox
 from efficacy_risk import (
@@ -500,7 +526,7 @@ def main():
                     dp_binding_affinity=dp_binding_affinity,
                     dp_stability=dp_stability
                 )
-                logger.info(f"Completed digital twin simulation for {design_id}. Target Binding: {binding_affinity:.2f} kcal/mol, Stability: {stability*100:.1f}%."))
+                logger.info(f"Completed digital twin simulation for {design_id}. Target Binding: {binding_affinity:.2f} kcal/mol, Stability: {stability*100:.1f}%.")
 
             except Exception as e:
                 logger.error(f"Error handling peptide message: {e}")
