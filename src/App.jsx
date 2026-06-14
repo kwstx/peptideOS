@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
 
 // Initial logs preset
@@ -68,6 +68,11 @@ export default function App() {
   const [promptText, setPromptText] = useState('Correcting mitochondrial tagging deficits in neurons after viral exposure');
   const [targetProtein, setTargetProtein] = useState('PINK1 / Parkin');
   const [complexity, setComplexity] = useState('standard');
+  const [sequenceLength, setSequenceLength] = useState(25);
+  const [offTargetTolerance, setOffTargetTolerance] = useState(0.05);
+  
+  // WebSocket Live Stream Data
+  const [liveStreamData, setLiveStreamData] = useState([]);
   
   // Pipeline simulation states
   const [isDesigning, setIsDesigning] = useState(false);
@@ -90,8 +95,6 @@ export default function App() {
   
   // Output results
   const [designedSequence, setDesignedSequence] = useState('');
-  const [bindingAffinity, setBindingAffinity] = useState(0);
-  const [stabilityScore, setStabilityScore] = useState(0);
   const [synthesisScript, setSynthesisScript] = useState('');
   const [efficacyRiskData, setEfficacyRiskData] = useState({
     therapeutic_index: {
@@ -309,6 +312,7 @@ export default function App() {
   const triggerPipeline = async () => {
     if (isDesigning) return;
     setIsDesigning(true);
+    setLiveStreamData([]);
     setPipelineStage('DIFFUSION');
     setPipelineProgress(15);
     noiseLevel.current = 1.0;
@@ -339,6 +343,9 @@ export default function App() {
       const residues = ['MET', 'GLY', 'ALA', 'PHE', 'LEU', 'LYS'];
       setCurrentResidue(residues[step - 1]);
       addLog('diffusion', `Iteration ${step * 10}/50 - Structural RMSD: ${simulatedRmsd}A, Sequence Entropy: ${simulatedEntropy}`);
+      
+      const currentSeq = "MGAFLGKVLKACVVALSGKLL-NH2".substring(0, step * 5);
+      setLiveStreamData(prev => [...prev, `[wss://stream.peptideos/seq] Refining sequence chunk... ${currentSeq}`]);
     }
 
     const mockSequence = "MGAFLGKVLKACVVALSGKLL-NH2";
@@ -367,8 +374,6 @@ export default function App() {
 
     const finalAffinity = -12.4;
     const finalStability = 0.94;
-    setBindingAffinity(finalAffinity);
-    setStabilityScore(finalStability);
     
     addLog('simulation', `Digital twin analysis finished. Binding Free Energy: ${finalAffinity} kcal/mol, Cellular Recovery: ${(finalStability*100).toFixed(0)}%.`);
     addLog('simulation', `Compiling solid phase peptide synthesis (SPPS) protocol...`);
@@ -568,8 +573,54 @@ ANALYTICAL_PURIFICATION:
     setReplicas(2);
   };
 
+  // Export API Script implementation
+  const exportAPIScript = () => {
+    const scriptContent = `import requests
+import json
+
+# Auto-generated PeptiPrompt API Script
+# Target: ${targetProtein}
+
+API_ENDPOINT = "https://api.peptideos.com/v1/design"
+API_KEY = "your_api_key_here"
+
+payload = {
+    "prompt": "${promptText}",
+    "target": "${targetProtein}",
+    "scale": "${complexity}",
+    "constraints": {
+        "max_length": ${sequenceLength},
+        "off_target_tolerance": ${offTargetTolerance}
+    }
+}
+
+headers = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json"
+}
+
+print("Triggering autonomous script generation API...")
+response = requests.post(API_ENDPOINT, json=payload, headers=headers)
+
+if response.status_code == 200:
+    print("Success! Generated Protocol:")
+    print(response.json().get("script"))
+else:
+    print(f"Error: {response.status_code}")
+`;
+    const blob = new Blob([scriptContent], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `generate_protocol_${targetProtein.replace(/[^a-zA-Z0-9]/g, '')}.py`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   // Vector Search implementation
-  const handleVectorSearch = () => {
+  function handleVectorSearch() {
     const query = searchQuery.toLowerCase();
     const scored = PRIOR_DESIGNS.map(design => {
       let overlap = 0;
@@ -675,6 +726,22 @@ ANALYTICAL_PURIFICATION:
                   </select>
                 </div>
 
+                <div className="parameter-row" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '8px', marginTop: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                    <span>Max Sequence Length:</span>
+                    <span className="text-cyan">{sequenceLength} AA</span>
+                  </div>
+                  <input type="range" min="10" max="50" value={sequenceLength} onChange={(e) => setSequenceLength(e.target.value)} disabled={isDesigning} style={{ width: '100%' }} />
+                </div>
+                
+                <div className="parameter-row" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '8px', marginTop: '12px', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                    <span>Off-Target Tolerance:</span>
+                    <span className="text-purple">{(offTargetTolerance * 100).toFixed(0)}%</span>
+                  </div>
+                  <input type="range" min="0.01" max="0.2" step="0.01" value={offTargetTolerance} onChange={(e) => setOffTargetTolerance(e.target.value)} disabled={isDesigning} style={{ width: '100%' }} />
+                </div>
+
                 <button 
                   className="design-btn" 
                   onClick={triggerPipeline}
@@ -682,6 +749,16 @@ ANALYTICAL_PURIFICATION:
                 >
                   {isDesigning ? 'Processing...' : 'Compile & Design Peptide'}
                 </button>
+
+                {(!isDesigning && designedSequence) && (
+                  <button 
+                    className="infra-btn" 
+                    style={{ width: '100%', marginTop: '12px', background: 'rgba(6, 182, 212, 0.1)', borderColor: '#06b6d4', color: '#06b6d4' }}
+                    onClick={exportAPIScript}
+                  >
+                    Export Pipeline as API Script
+                  </button>
+                )}
               </div>
             </div>
 
@@ -827,6 +904,31 @@ ANALYTICAL_PURIFICATION:
                         {designedSequence}
                       </div>
                     </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Live WebSocket Preview Pane */}
+              <div className="glass-panel panel-content" style={{ marginTop: '20px' }}>
+                <h2 className="panel-title">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+                  Live Sequence & Simulation Stream (WebSocket)
+                </h2>
+                <div style={{ background: '#04060a', padding: '12px', borderRadius: '6px', height: '120px', overflowY: 'auto', fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  {liveStreamData.length === 0 && !isDesigning ? (
+                    <div style={{ fontStyle: 'italic', color: 'var(--text-muted)', textAlign: 'center', marginTop: '30px' }}>Waiting for wss://stream.peptideos connection...</div>
+                  ) : (
+                    liveStreamData.map((data, idx) => (
+                      <div key={idx} style={{ marginBottom: '6px' }}>
+                        <span style={{ color: '#06b6d4' }}>&gt; </span>{data}
+                      </div>
+                    ))
+                  )}
+                  {pipelineStage === 'SIMULATION' && (
+                    <div style={{ color: '#10b981', marginTop: '6px' }}>&gt; [wss://stream.peptideos/sim] SDE Solver Step: Binding Energy {freeEnergy} kcal/mol</div>
+                  )}
+                  {pipelineStage === 'COMPLETED' && (
+                    <div style={{ color: '#a855f7', marginTop: '6px' }}>&gt; [wss://stream.peptideos/status] Stream disconnected. Process completed.</div>
                   )}
                 </div>
               </div>
