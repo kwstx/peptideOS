@@ -183,8 +183,23 @@ def main():
                 logger.info(f"[{design_id}] Instantiating Digital Twin Sandbox...")
                 sandbox = DigitalTwinSandbox()
                 
-                disease_context = {"id": f"ctx_{design_id}", "targets": ["mTOR", "MAPK", "JAK-STAT"]}
-                omics_data = {"layers": ["genomics", "transcriptomics", "proteomics"], "features": {"mTOR": 1.0}}
+                target_protein = peptide_data.get("target_protein", "mTOR")
+                disease_state = peptide_data.get("disease_state", "Unknown")
+                targets = [t.strip() for t in target_protein.replace("/", ",").split(",") if t.strip()]
+                if not targets:
+                    targets = ["mTOR"]
+                
+                disease_context = {
+                    "id": f"ctx_{design_id}",
+                    "targets": targets,
+                    "disease_state": disease_state
+                }
+                
+                features = {t: 1.0 for t in targets}
+                omics_data = {
+                    "layers": ["genomics", "transcriptomics", "proteomics"],
+                    "features": features
+                }
                 
                 sandbox.ingest_context_and_build(disease_context, omics_data)
                 
