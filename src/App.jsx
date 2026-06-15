@@ -941,8 +941,9 @@ else:
                 No-Code Builder
               </h2>
               <div className="prompt-box">
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Disease State Prompt</label>
+                <label htmlFor="prompt-input" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Disease State Prompt</label>
                 <textarea 
+                  id="prompt-input"
                   className="prompt-textarea" 
                   value={promptText}
                   onChange={(e) => setPromptText(e.target.value)}
@@ -951,8 +952,8 @@ else:
                 />
                 
                 <div className="parameter-row">
-                  <span>Target Protein:</span>
-                  <select value={targetProtein} onChange={(e) => setTargetProtein(e.target.value)} disabled={isDesigning}>
+                  <label htmlFor="target-protein-select">Target Protein:</label>
+                  <select id="target-protein-select" value={targetProtein} onChange={(e) => setTargetProtein(e.target.value)} disabled={isDesigning}>
                     <option value="PINK1 / Parkin">PINK1 / Parkin</option>
                     <option value="Amyloid-Beta">Amyloid-Beta</option>
                     <option value="Spike RBD">Spike RBD</option>
@@ -961,8 +962,8 @@ else:
                 </div>
 
                 <div className="parameter-row">
-                  <span>Simulation Scale:</span>
-                  <select value={complexity} onChange={(e) => setComplexity(e.target.value)} disabled={isDesigning}>
+                  <label htmlFor="simulation-scale-select">Simulation Scale:</label>
+                  <select id="simulation-scale-select" value={complexity} onChange={(e) => setComplexity(e.target.value)} disabled={isDesigning}>
                     <option value="standard">Standard</option>
                     <option value="high_fidelity">High Fidelity (SDE)</option>
                     <option value="deep">Deep Multiscale</option>
@@ -971,18 +972,18 @@ else:
 
                 <div className="parameter-row" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '8px', marginTop: '12px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span>Max Sequence Length:</span>
+                    <label htmlFor="sequence-length-slider">Max Sequence Length:</label>
                     <span className="text-cyan">{sequenceLength} AA</span>
                   </div>
-                  <input type="range" min="10" max="50" value={sequenceLength} onChange={(e) => setSequenceLength(e.target.value)} disabled={isDesigning} style={{ width: '100%' }} />
+                  <input id="sequence-length-slider" type="range" min="10" max="50" value={sequenceLength} onChange={(e) => setSequenceLength(e.target.value)} disabled={isDesigning} style={{ width: '100%' }} />
                 </div>
                 
                 <div className="parameter-row" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '8px', marginTop: '12px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span>Off-Target Tolerance:</span>
+                    <label htmlFor="off-target-slider">Off-Target Tolerance:</label>
                     <span className="text-purple">{(offTargetTolerance * 100).toFixed(0)}%</span>
                   </div>
-                  <input type="range" min="0.01" max="0.2" step="0.01" value={offTargetTolerance} onChange={(e) => setOffTargetTolerance(e.target.value)} disabled={isDesigning} style={{ width: '100%' }} />
+                  <input id="off-target-slider" type="range" min="0.01" max="0.2" step="0.01" value={offTargetTolerance} onChange={(e) => setOffTargetTolerance(e.target.value)} disabled={isDesigning} style={{ width: '100%' }} />
                 </div>
 
                 <div className="parameter-row" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '12px' }}>
@@ -1015,10 +1016,11 @@ else:
 
                 <div className="parameter-row" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '8px', marginTop: '12px', marginBottom: '16px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                    <span>DP Inference Budget (Epsilon):</span>
+                    <label htmlFor="epsilon-slider">DP Inference Budget (Epsilon):</label>
                     <span className="text-orange">ε = {epsilonVal.toFixed(1)}</span>
                   </div>
                   <input 
+                    id="epsilon-slider"
                     type="range" 
                     min="0.1" 
                     max="10.0" 
