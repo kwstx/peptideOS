@@ -187,7 +187,7 @@ class ImmutableAuditLedger:
                 "prev_hash": prev,
                 "block_hash": curr_hash,
                 "signature": sig,
-                "integrity_valid": computed_sig == sig and computed_hash == curr_hash and prev == expected_prev
+                "integrity_valid": computed_sig == sig and computed_hash == curr_hash and prev == expected_prev and computed_details_hash == det_hash and idx == index
             })
             expected_prev = curr_hash
             

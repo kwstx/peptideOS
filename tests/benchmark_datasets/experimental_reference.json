@@ -1,0 +1,111 @@
+{
+  "mitophagy_time_series": {
+    "times": [
+      0.0,
+      2.0,
+      4.0,
+      6.0,
+      8.0,
+      10.0,
+      12.0
+    ],
+    "LC3-II": {
+      "activity_mean": [
+        0.04867677673847681,
+        0.5186110674445918,
+        0.6730092553259126,
+        0.7010486455964907,
+        0.7085754603967648,
+        0.71318984581888,
+        0.7085651008306637
+      ],
+      "activity_std": [
+        0.004484636721138081,
+        0.052984413585928807,
+        0.0442894027280903,
+        0.041195634641384385,
+        0.03815804411029946,
+        0.03468078400629122,
+        0.03614709290266742
+      ]
+    },
+    "Parkin": {
+      "activity_mean": [
+        0.05335180666287893,
+        0.3505703430146162,
+        0.5117358991814486,
+        0.5525281655941595,
+        0.5534385595875958,
+        0.5398489580027461,
+        0.5324889798614009
+      ],
+      "activity_std": [
+        0.006288929161640802,
+        0.05165034645257828,
+        0.062463028651277876,
+        0.05835461996396527,
+        0.05746066225184598,
+        0.05725510560556636,
+        0.059995393545841325
+      ]
+    },
+    "PINK1": {
+      "activity_mean": [
+        0.10236072528373835,
+        0.1360468423196899,
+        0.15382862405905914,
+        0.16413944844547726,
+        0.1688995628307891,
+        0.17190900714816532,
+        0.17141336994019055
+      ],
+      "activity_std": [
+        0.012763032366753198,
+        0.0195193177053079,
+        0.02435183040477923,
+        0.03173234382093761,
+        0.032431760255584245,
+        0.03548591950156682,
+        0.03185711507871306
+      ]
+    }
+  },
+  "mitophagy_centrality_shifts": {
+    "LC3-II": -0.07411029820967358,
+    "Parkin": -0.597508270931293,
+    "PINK1": -0.5191287955704567,
+    "Mfn2": -0.4875557659474868,
+    "VDAC1": -0.32372949737506557,
+    "OPTN": -0.15964150763143742,
+    "mTOR": 0.4539956254724929,
+    "AKT": 0.5968149336185317,
+    "BAX": 0.2966766364043794,
+    "CASP3": 0.16899424432976856
+  },
+  "peptide_therapeutic_responses": [
+    {
+      "sequence": "MGAFLGKVLKACVVALSGKLL",
+      "disease_state": "Mitochondrial Tagging Deficit (Post-Viral Neuropathy)",
+      "target_protein": "PINK1 / Parkin",
+      "known_efficacy": 0.7418499986697004
+    },
+    {
+      "sequence": "MGAFLGKVL",
+      "disease_state": "Mitochondrial Tagging Deficit (Post-Viral Neuropathy)",
+      "target_protein": "PINK1 / Parkin",
+      "known_efficacy": 0.7387425869410631
+    },
+    {
+      "sequence": "MGAFLGKVLKACVVALSGKLL-NH2",
+      "disease_state": "Mitochondrial Tagging Deficit (Post-Viral Neuropathy)",
+      "target_protein": "PINK1 / Parkin",
+      "known_efficacy": 0.7019892525742164
+    },
+    {
+      "sequence": "AAAAAAAAAAAAAAA",
+      "disease_state": "Mitochondrial Tagging Deficit (Post-Viral Neuropathy)",
+      "target_protein": "PINK1 / Parkin",
+      "known_efficacy": 0.7551227888071381
+    }
+  ]
+}

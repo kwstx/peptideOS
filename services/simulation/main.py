@@ -53,6 +53,50 @@ from governance import (
     ProvenanceTracker
 )
 
+from typing import Tuple, Optional
+
+class PhysicochemicalInstabilityError(ValueError):
+    def __init__(self, message: str, metadata: dict):
+        super().__init__(message)
+        self.error_code = "PHYSICOCHEMICAL_INSTABILITY"
+        self.diagnostic_metadata = metadata
+
+class SimulationHorizonExceededError(ValueError):
+    def __init__(self, message: str, metadata: dict):
+        super().__init__(message)
+        self.error_code = "SIMULATION_HORIZON_EXCEEDED"
+        self.diagnostic_metadata = metadata
+
+def compute_net_charge(sequence: str) -> int:
+    seq = sequence.replace("-NH2", "")
+    pos_charge = sum(1 for aa in seq if aa in "KR")
+    neg_charge = sum(1 for aa in seq if aa in "DE")
+    return pos_charge - neg_charge
+
+def compute_hydrophobicity_ratio(sequence: str) -> float:
+    seq = sequence.replace("-NH2", "")
+    if not seq:
+        return 0.0
+    hydrophobic_residues = "WFYLIVAMGP"
+    h_count = sum(1 for aa in seq if aa in hydrophobic_residues)
+    return h_count / len(seq)
+
+def check_physicochemical_stability(sequence: str) -> Tuple[bool, Optional[str]]:
+    seq = sequence.replace("-NH2", "")
+    if not seq:
+        return True, None
+    pos_charge = sum(1 for aa in seq if aa in "KR")
+    neg_charge = sum(1 for aa in seq if aa in "DE")
+    net_charge = abs(pos_charge - neg_charge)
+    if len(seq) > 0 and (net_charge / len(seq)) > 0.6:
+        return False, f"Extreme net charge ratio ({net_charge / len(seq):.2f}) exceeds stability threshold 0.6"
+    h_ratio = compute_hydrophobicity_ratio(sequence)
+    if h_ratio > 0.95:
+        return False, f"Extreme hydrophobicity ratio ({h_ratio:.2f}) approaching physical collapse limit"
+    if h_ratio < 0.05:
+        return False, f"Extreme hydrophilicity ratio ({h_ratio:.2f}) approaching physical solvation limit"
+    return True, None
+
 # Initialize Conformal Ensemble ML Model
 logger.info("Initializing Efficacy and Risk Conformal Ensemble model...")
 efficacy_risk_model = EnsembleEfficacyRiskModel(significance_level=0.05)
@@ -217,7 +261,8 @@ def check_db_schema():
             ("is_encrypted", "BOOLEAN DEFAULT FALSE"),
             ("provenance_token", "TEXT"),
             ("biosecurity_status", "VARCHAR(50) DEFAULT 'UNKNOWN'"),
-            ("consent_token", "TEXT")
+            ("consent_token", "TEXT"),
+            ("idempotency_key", "VARCHAR(100)")
         ]
         for col_name, col_type in new_cols:
             cursor.execute(f"ALTER TABLE designs ADD COLUMN IF NOT EXISTS {col_name} {col_type};")
@@ -293,6 +338,66 @@ def update_database_results(
         logger.error(f"Failed to update database for {design_id}: {e}")
 
 
+def update_database_failed_status(
+    design_id: str, error_message: str, error_code: str, diagnostic_metadata: dict,
+    is_encrypted: bool = False, consent_token: str = None, epsilon: float = 1.0
+):
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS
+        )
+        cursor = conn.cursor()
+        
+        # Build diagnostic report
+        diagnostic_report = (
+            f"# PEPTIDEOS SIMULATION FAILURE REPORT\n"
+            f"**PEPTIDE IDENTIFIER:** {design_id}\n"
+            f"**STATUS:** FAILED\n"
+            f"**ERROR CODE:** {error_code}\n"
+            f"**ERROR MESSAGE:** {error_message}\n"
+            f"**TIMESTAMP:** {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n\n"
+            f"### DIAGNOSTIC METADATA\n"
+            f"{json.dumps(diagnostic_metadata, indent=2)}\n"
+        )
+        
+        final_compliance = diagnostic_report
+        if is_encrypted:
+            try:
+                final_compliance = CryptographicManager.encrypt({"val": diagnostic_report})
+            except Exception as enc_err:
+                logger.error(f"Encryption failed during failure DB write: {enc_err}")
+                
+        cursor.execute(
+            """
+            UPDATE designs 
+            SET status = %s, compliance_report = %s, consent_token = %s, epsilon = %s
+            WHERE design_id = %s;
+            """,
+            ("FAILED", final_compliance, consent_token, epsilon, design_id)
+        )
+        conn.commit()
+        
+        # Write to Immutable Audit Ledger
+        audit_details = {
+            "design_id": design_id,
+            "error_code": error_code,
+            "error_message": error_message,
+            "is_encrypted": is_encrypted,
+            "epsilon": epsilon,
+            "consent_token": consent_token
+        }
+        ImmutableAuditLedger.create_log_entry(conn, "SIMULATION_FAILED", audit_details)
+        
+        cursor.close()
+        conn.close()
+        logger.info(f"Database failed status updated and audited successfully for {design_id}")
+    except Exception as e:
+        logger.error(f"Failed to update failed status in database for {design_id}: {e}")
+
+
 def main():
     logger.info("Starting Digital Twin Simulation Service...")
     check_db_schema()
@@ -323,11 +428,49 @@ def main():
             try:
                 peptide_data = json.loads(msg.value().decode('utf-8'))
                 design_id = peptide_data.get("design_id")
+                
+                # Check for upstream worker failures
+                if peptide_data.get("status") == "FAILED":
+                    logger.warning(f"[{design_id}] Consumed failure message from upstream: {peptide_data.get('error_message')}")
+                    update_database_failed_status(
+                        design_id=design_id,
+                        error_message=peptide_data.get("error_message", "Unknown upstream error"),
+                        error_code=peptide_data.get("error_code", "UPSTREAM_FAILURE"),
+                        diagnostic_metadata=peptide_data.get("diagnostic_metadata", {}),
+                        is_encrypted=peptide_data.get("is_encrypted", False),
+                        consent_token=peptide_data.get("consent_token"),
+                        epsilon=peptide_data.get("epsilon", 1.0)
+                    )
+                    continue
+                
                 raw_sequence = peptide_data.get("sequence")
                 complexity = peptide_data.get("simulation_complexity", "standard")
                 is_encrypted = peptide_data.get("is_encrypted", False)
                 consent_token = peptide_data.get("consent_token")
                 epsilon = peptide_data.get("epsilon", 1.0)
+                
+                # Check for simulation complexity horizon violations
+                if complexity in ["extremely_long", "extreme_horizon"]:
+                    raise SimulationHorizonExceededError(
+                        "Simulation horizon limit exceeded. Requested simulation complexity exceeds safety bounds (< 5000 SDE/Langevin steps).",
+                        {
+                            "complexity_level": complexity,
+                            "maximum_allowed_steps": 5000,
+                            "estimated_steps_required": 1000000
+                        }
+                    )
+                
+                # Check for physicochemical instability
+                is_valid_physico, physico_err = check_physicochemical_stability(raw_sequence)
+                if not is_valid_physico:
+                    raise PhysicochemicalInstabilityError(
+                        f"Physicochemical instability constraint violation: {physico_err}",
+                        {
+                            "sequence": raw_sequence,
+                            "net_charge": compute_net_charge(raw_sequence),
+                            "hydrophobicity_ratio": compute_hydrophobicity_ratio(raw_sequence)
+                        }
+                    )
                 
                 # Decrypt inputs if E2EE is active
                 prompt = peptide_data.get("prompt")
@@ -531,6 +674,18 @@ def main():
 
             except Exception as e:
                 logger.error(f"Error handling peptide message: {e}")
+                if 'design_id' in locals():
+                    error_code = getattr(e, "error_code", "INTERNAL_SIMULATION_ERROR")
+                    diagnostic_metadata = getattr(e, "diagnostic_metadata", {"detail": str(e)})
+                    update_database_failed_status(
+                        design_id=design_id,
+                        error_message=str(e),
+                        error_code=error_code,
+                        diagnostic_metadata=diagnostic_metadata,
+                        is_encrypted=peptide_data.get("is_encrypted", False) if 'peptide_data' in locals() else False,
+                        consent_token=peptide_data.get("consent_token") if 'peptide_data' in locals() else None,
+                        epsilon=peptide_data.get("epsilon", 1.0) if 'peptide_data' in locals() else 1.0
+                    )
                 
     except KeyboardInterrupt:
         pass

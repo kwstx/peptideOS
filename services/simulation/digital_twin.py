@@ -263,6 +263,9 @@ class PathSDESolver:
         nodes = list(self.kg.nodes.keys())
         n_nodes = len(nodes)
         
+        trajectory_seed = param_seeds.get("_trajectory_seed", 42)
+        rng = np.random.RandomState(trajectory_seed)
+        
         p_traj = np.zeros((self.num_steps, n_nodes))
         m_traj = np.zeros((self.num_steps, n_nodes))
         a_traj = np.zeros((self.num_steps, n_nodes))
@@ -320,7 +323,7 @@ class PathSDESolver:
                             diffusion_term += 0.02 * adj_val * (p_current[neighbor_idx] - p_i)
                             
                 dp = (synthesis_rates[node] - deg_rates[node] * p_i + diffusion_term) * self.dt
-                dw_p = np.random.normal(0, np.sqrt(self.dt))
+                dw_p = rng.normal(0, np.sqrt(self.dt))
                 dp += self.sigma_p * p_i * dw_p
                 p_next[idx] = max(0.0, p_i + dp)
                 
@@ -342,13 +345,13 @@ class PathSDESolver:
                 lmbda = self.coupling_factors.get(node, 1.0)
                 
                 dm = (ptm_rates[node] * lmbda * reg_signal * (1.0 - m_i) - ptm_decay[node] * m_i) * self.dt
-                dw_m = np.random.normal(0, np.sqrt(self.dt))
+                dw_m = rng.normal(0, np.sqrt(self.dt))
                 noise_scale = np.sqrt(max(0.0, m_i * (1.0 - m_i)))
                 dm += self.sigma_m * noise_scale * dw_m
                 m_next[idx] = max(0.0, min(1.0, m_i + dm))
                 
                 da = (act_rates[node] * m_next[idx] * (1.0 - a_i) - act_decay[node] * a_i) * self.dt
-                dw_a = np.random.normal(0, np.sqrt(self.dt))
+                dw_a = rng.normal(0, np.sqrt(self.dt))
                 noise_scale_a = np.sqrt(max(0.0, a_i * (1.0 - a_i)))
                 da += self.sigma_a * noise_scale_a * dw_a
                 a_next[idx] = max(0.0, min(1.0, a_i + da))
@@ -436,7 +439,7 @@ class VirtualCellularMilieu:
         
         ensemble_seeds = []
         for ens_idx in range(num_ensemble):
-            seeds = {}
+            seeds = {"_trajectory_seed": ens_idx}
             for node in nodes:
                 seeds[node] = {
                     "synthesis_rate": float(0.2 * np.exp(np.random.normal(0, 0.15))),

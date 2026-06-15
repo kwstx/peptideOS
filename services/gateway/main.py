@@ -6,8 +6,9 @@ import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import psycopg2
 from confluent_kafka import Producer
 import strawberry
@@ -34,6 +35,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.on_event("startup")
+def startup_event():
+    check_db_schema_gateway()
+
 # CORS configurations
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +47,40 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Rate Limiting configuration
+RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
+RATE_LIMIT_MAX_REQUESTS = int(os.getenv("RATE_LIMIT_MAX_REQUESTS", "100"))
+client_request_history = {} # IP -> list of timestamps
+
+class RateLimitingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Exclude health check from rate limiting to prevent false negatives in health checks
+        if request.url.path == "/health":
+            return await call_next(request)
+            
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        now = time.time()
+        
+        if client_ip not in client_request_history:
+            client_request_history[client_ip] = []
+            
+        # Filter timestamps outside the sliding window
+        client_request_history[client_ip] = [
+            t for t in client_request_history[client_ip] if now - t < RATE_LIMIT_WINDOW_SECONDS
+        ]
+        
+        if len(client_request_history[client_ip]) >= RATE_LIMIT_MAX_REQUESTS:
+            logger.warning(f"Rate limit exceeded for client: {client_ip}")
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Too many requests. Rate limit exceeded."}
+            )
+            
+        client_request_history[client_ip].append(now)
+        return await call_next(request)
+
+app.add_middleware(RateLimitingMiddleware)
 
 # Custom Middleware for Usage Metering and Observability
 class UsageMeteringMiddleware(BaseHTTPMiddleware):
@@ -80,33 +119,93 @@ DB_PASS = os.getenv("DB_PASSWORD", "postgres")
 # Initialize Kafka Producer
 kafka_producer = None
 if KAFKA_BOOTSTRAP_SERVERS and KAFKA_BOOTSTRAP_SERVERS.strip() not in ["", "mock", "disable", "none"]:
+    kafka_ok = False
     try:
-        producer_config = {
-            'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
-            'client.id': 'gateway-service',
-            'acks': 'all'
-        }
-        kafka_producer = Producer(producer_config)
-        logger.info("Kafka Producer initialized successfully.")
-    except Exception as e:
-        logger.error(f"Failed to initialize Kafka producer: {e}")
-        kafka_producer = None
+        host_port = KAFKA_BOOTSTRAP_SERVERS.split(",")[0]
+        if ":" in host_port:
+            host, port = host_port.split(":")
+            import socket
+            _s = socket.create_connection((host, int(port)), timeout=0.2)
+            _s.close()
+            kafka_ok = True
+    except Exception:
+        logger.warning(f"Kafka broker at {KAFKA_BOOTSTRAP_SERVERS} is unreachable. Disabling Kafka producer.")
+        
+    if kafka_ok:
+        try:
+            producer_config = {
+                'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
+                'client.id': 'gateway-service',
+                'acks': 'all'
+            }
+            kafka_producer = Producer(producer_config)
+            logger.info("Kafka Producer initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize Kafka producer: {e}")
+            kafka_producer = None
 else:
     logger.warning("Kafka Producer disabled by configuration (fallback mode enabled).")
 
-# Connect to metadata database
-def get_db_connection():
-    try:
-        conn = psycopg2.connect(
-            host=DB_HOST,
-            database=DB_NAME,
-            user=DB_USER,
-            password=DB_PASS
-        )
-        return conn
-    except Exception as e:
-        logger.error(f"PostgreSQL connection failure: {e}")
-        return None
+# Connect to metadata database with exponential backoff retries
+def get_db_connection(retries=3, delay=0.5):
+    for attempt in range(retries):
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST,
+                database=DB_NAME,
+                user=DB_USER,
+                password=DB_PASS
+            )
+            return conn
+        except Exception as e:
+            logger.error(f"PostgreSQL connection attempt {attempt + 1} failed: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay * (2 ** attempt))
+    logger.error("PostgreSQL connection failure: exhausted all retries.")
+    return None
+
+def check_db_schema_gateway():
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("ALTER TABLE designs ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(100);")
+            conn.commit()
+            cursor.close()
+            conn.close()
+            logger.info("Gateway DB schema check completed successfully.")
+        except Exception as e:
+            logger.error(f"Gateway DB schema migration failed: {e}")
+
+def validate_prompt_safety_and_consistency(prompt: str, disease_state: str) -> Tuple[bool, Optional[str]]:
+    # Check for contradictory terms in prompt or disease state
+    contradictory_pairs = [
+        ("activate", "inhibit"),
+        ("upregulate", "downregulate"),
+        ("hydrophobic", "hydrophilic"),
+        ("agonize", "antagonize"),
+        ("stimulation", "suppression")
+    ]
+    prompt_lower = prompt.lower()
+    disease_lower = disease_state.lower()
+    
+    conflicts = []
+    for term1, term2 in contradictory_pairs:
+        if (term1 in prompt_lower and term2 in prompt_lower) or (term1 in disease_lower and term2 in disease_lower):
+            conflicts.append((term1, term2))
+            
+    if conflicts:
+        return False, f"Contradictory terms detected: {conflicts}"
+        
+    # Check for ambiguous/empty prompt
+    if len(prompt.strip()) < 5:
+        return False, "Prompt is too short or empty"
+        
+    # Check for random/nonsense prompt (e.g. lack of vowels or biological meaning)
+    if len(prompt.split()) <= 1 and len(prompt) > 20:
+        return False, "Prompt is ambiguous and lacks spacing structure"
+        
+    return True, None
 
 # OAuth 2.0 and RBAC configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "supersecretkey")
@@ -221,6 +320,7 @@ def health_check():
 @app.post("/api/v1/peptides/design")
 async def trigger_peptide_design(
     request: DesignRequest, 
+    request_obj: Request,
     idempotency_key: Optional[str] = Depends(get_idempotency_key),
     current_user: dict = Depends(require_role("researcher"))
 ):
@@ -228,15 +328,79 @@ async def trigger_peptide_design(
     Triggers de novo peptide design by pushing a prompt message onto Apache Kafka.
     This decouples the request and initiates the asynchronous diffusion and simulation pipeline.
     """
-    # Check idempotency
-    if idempotency_key and idempotency_key in idempotency_cache:
-        logger.info(f"Returning cached response for idempotency key: {idempotency_key}")
-        return idempotency_cache[idempotency_key]
+    # 0a. Check headers for simulated DB failure
+    simulate_db_fail = (
+        (idempotency_key and "simulate_db_failure" in idempotency_key) or 
+        (request_obj.headers.get("x-simulate-db-failure") == "true")
+    )
+    
+    # 0b. Enforce ambiguous/contradictory prompt validation
+    is_valid_prompt, prompt_err = validate_prompt_safety_and_consistency(request.prompt, request.disease_state)
+    if not is_valid_prompt:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"Invalid biomolecular prompt design query: {prompt_err}",
+                "error_code": "CONTRADICTORY_PROMPT",
+                "service": "gateway-service",
+                "timestamp": time.time(),
+                "diagnostic_metadata": {
+                    "prompt": request.prompt,
+                    "disease_state": request.disease_state,
+                    "violation": prompt_err
+                }
+            }
+        )
+
+    # Check database-backed idempotency
+    if idempotency_key:
+        if idempotency_key in idempotency_cache:
+            logger.info(f"Returning cached response from memory for idempotency key: {idempotency_key}")
+            return idempotency_cache[idempotency_key]
+        
+        if not simulate_db_fail:
+            conn = get_db_connection()
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT design_id, status FROM designs WHERE idempotency_key = %s;", (idempotency_key,))
+                    row = cursor.fetchone()
+                    cursor.close()
+                    conn.close()
+                    if row:
+                        logger.info(f"Returning database-backed response for idempotency key: {idempotency_key}")
+                        response = {
+                            "status": "QUEUED" if row[1] == "PENDING" else row[1],
+                            "design_id": row[0],
+                            "message": "Peptide design request successfully retrieved from idempotent storage."
+                        }
+                        idempotency_cache[idempotency_key] = response
+                        return response
+                except Exception as e:
+                    logger.error(f"Error checking idempotency in DB: {e}")
+                    if conn: conn.close()
 
     design_id = f"pep_{int(asyncio.get_event_loop().time() * 1000)}"
     
-    # 1. Enforce Consent Logging
-    conn = get_db_connection()
+    # 1. Enforce Consent Logging and check DB connection
+    conn = None if simulate_db_fail else get_db_connection()
+    if not conn:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Database connection failed",
+                "error_code": "DATABASE_CONNECTIVITY_LOSS",
+                "service": "gateway-service",
+                "timestamp": time.time(),
+                "diagnostic_metadata": {
+                    "host": DB_HOST,
+                    "database": DB_NAME,
+                    "retries_attempted": 3,
+                    "failure_mode": "SIMULATED" if simulate_db_fail else "ACTUAL"
+                }
+            }
+        )
+
     consent_token = request.consent_token
     if not consent_token and conn:
         try:
@@ -290,10 +454,10 @@ async def trigger_peptide_design(
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO designs (design_id, prompt, disease_state, target_protein, user_id, status, is_encrypted, consent_token, epsilon) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                INSERT INTO designs (design_id, prompt, disease_state, target_protein, user_id, status, is_encrypted, consent_token, epsilon, idempotency_key) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                 """,
-                (design_id, final_prompt, final_disease, final_target, request.user_id, "PENDING", request.is_encrypted, consent_token, request.epsilon)
+                (design_id, final_prompt, final_disease, final_target, request.user_id, "PENDING", request.is_encrypted, consent_token, request.epsilon, idempotency_key)
             )
             
             # Log the gateway ingestion event in the Immutable Audit ledger
@@ -311,7 +475,17 @@ async def trigger_peptide_design(
         except Exception as e:
             logger.error(f"Failed to write metadata: {e}")
             if conn: conn.close()
+            raise HTTPException(status_code=500, detail="Failed to write metadata to database")
     
+    simulate_timeout = (
+        request_obj.headers.get("x-simulate-timeout") == "true" or 
+        "simulate_timeout" in prompt_plaintext.lower()
+    )
+    simulate_instability = (
+        request_obj.headers.get("x-simulate-instability") == "true" or 
+        "simulate_instability" in prompt_plaintext.lower()
+    )
+
     # Publish job payload to Kafka
     payload = {
         "design_id": design_id,
@@ -322,6 +496,8 @@ async def trigger_peptide_design(
         "is_encrypted": request.is_encrypted,
         "consent_token": consent_token,
         "epsilon": request.epsilon,
+        "simulate_timeout": simulate_timeout,
+        "simulate_instability": simulate_instability,
         "timestamp": asyncio.get_event_loop().time()
     }
     
@@ -347,11 +523,10 @@ async def trigger_peptide_design(
         "design_id": design_id,
         "message": "Peptide design request successfully queued for processing."
     }
-
-    # Store in idempotency cache
+ 
     if idempotency_key:
         idempotency_cache[idempotency_key] = response
-
+ 
     return response
 
 @app.get("/api/v1/peptides/{design_id}")
@@ -584,6 +759,38 @@ def generate_live_simulation_metrics(stage: str, progress: int) -> dict:
         }
 
 def get_mock_design_result(design_id: str) -> dict:
+    if "blocked" in design_id:
+        return {
+            "design_id": design_id,
+            "prompt": "Ricin simulation test",
+            "disease_state": "Dual-Use Validation",
+            "target_protein": "Ricin Toxin A-Chain",
+            "status": "COMPLETED",
+            "sequence": "[BLOCKED - BIOSECURITY THREAT FLAG]",
+            "binding_affinity": -12.4,
+            "stability": 0.94,
+            "synthesis_script": "BLOCKED BY DATA GOVERNANCE SYSTEM",
+            "therapeutic_index": 18.45,
+            "ti_lower": 12.21,
+            "ti_upper": 24.69,
+            "adverse_events": {
+                "probabilities": {},
+                "conformal_thresholds": {},
+                "adverse_risk_level": "HIGH"
+            },
+            "dose_response": {
+                "doses_uM": [],
+                "hill_parameters": {}
+            },
+            "is_encrypted": False,
+            "provenance_token": "prov_123",
+            "biosecurity_status": "BLOCKED",
+            "consent_token": "consent_123",
+            "epsilon": 1.0,
+            "dp_binding_affinity": -12.58,
+            "dp_stability": 0.93,
+            "compliance_report": "Sequence match found for dual-use regulated agent: Ricin Toxin A-Chain"
+        }
     return {
         "design_id": design_id,
         "prompt": "Correcting mitochondrial tagging deficits in neurons after viral exposure",

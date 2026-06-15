@@ -109,6 +109,12 @@ class ScoreBasedDiffusion(nn.Module):
         logits = self.score_network(xt + condition)
         return logits
 
+class ModelInferenceTimeoutError(TimeoutError):
+    def __init__(self, message: str, metadata: dict):
+        super().__init__(message)
+        self.error_code = "MODEL_INFERENCE_TIMEOUT"
+        self.diagnostic_metadata = metadata
+
 class ConditionalGenerativeFoundationModel(nn.Module):
     """
     Conditional generative foundation model architected in the style of advanced ligand design systems.
@@ -121,9 +127,21 @@ class ConditionalGenerativeFoundationModel(nn.Module):
         self.rl_optimizer = RLFeedbackLoop()
         self.adversarial_reg = AdversarialRegularizer()
         
-    def generate(self, prompt: str, target: str, design_id: str, steps: int = 5) -> str:
+    def generate(self, prompt: str, target: str, design_id: str, steps: int = 5, simulate_timeout: bool = False, simulate_instability: bool = False) -> str:
         logger.info(f"[{design_id}] Initializing conditional sequence generation for target: {target}")
         
+        # Check for simulated timeout
+        if simulate_timeout:
+            logger.error(f"[{design_id}] Simulating model inference timeout...")
+            raise ModelInferenceTimeoutError(
+                "Model inference execution timed out",
+                {
+                    "requested_steps": steps,
+                    "timeout_threshold_seconds": 3.0,
+                    "elapsed_time_seconds": 3.01
+                }
+            )
+
         # 1. Condition on embeddings of biological targets and functional objectives
         target_cond = self.target_embedder(target_id=0) # Mock ID
         obj_cond = self.objective_embedder(objectives=torch.randn(1, 128))
@@ -156,9 +174,14 @@ class ConditionalGenerativeFoundationModel(nn.Module):
             xt = xt + 0.01 * torch.randn_like(xt)
             
         # Decode final latent into discrete amino acid tokens
-        length = random.randint(12, 25)
-        sequence = "".join(random.choices(AMINO_ACIDS, k=length))
-        final_sequence = f"{sequence}-NH2"
+        if simulate_instability:
+            # Generate sequence with extreme positive charge ratio (all Lysines)
+            final_sequence = "KKKKKKKKKKKK-NH2"
+            logger.warning(f"[{design_id}] Generating simulated unstable sequence: {final_sequence}")
+        else:
+            length = random.randint(12, 25)
+            sequence = "".join(random.choices(AMINO_ACIDS, k=length))
+            final_sequence = f"{sequence}-NH2"
         
         # Apply custom developer extension plugins
         try:
@@ -182,11 +205,11 @@ class ConditionalGenerativeFoundationModel(nn.Module):
 # Instantiate global model
 generative_foundation_model = ConditionalGenerativeFoundationModel()
 
-def generate_peptide_sequence(prompt: str, target: str, design_id: str) -> str:
+def generate_peptide_sequence(prompt: str, target: str, design_id: str, simulate_timeout: bool = False, simulate_instability: bool = False) -> str:
     """
     Executes the foundation model pipeline.
     """
-    return generative_foundation_model.generate(prompt, target, design_id, steps=5)
+    return generative_foundation_model.generate(prompt, target, design_id, steps=5, simulate_timeout=simulate_timeout, simulate_instability=simulate_instability)
 
 def main():
     logger.info("Starting Diffusion Service...")
@@ -245,8 +268,12 @@ def main():
                 
                 logger.info(f"Processing design job {design_id}: '{prompt}' against target '{target}'")
                 
+                # Extract simulated failure flags
+                simulate_timeout = job_data.get("simulate_timeout", False)
+                simulate_instability = job_data.get("simulate_instability", False)
+
                 # Generate sequence using the conditional generative foundation model
-                sequence = generate_peptide_sequence(prompt, target, design_id)
+                sequence = generate_peptide_sequence(prompt, target, design_id, simulate_timeout, simulate_instability)
                 
                 # Publish outcome to 'designed-peptides' topic
                 output_payload = {
@@ -272,6 +299,30 @@ def main():
 
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
+                try:
+                    error_payload = {
+                        "design_id": design_id,
+                        "status": "FAILED",
+                        "error_message": str(e),
+                        "error_code": getattr(e, "error_code", "INTERNAL_WORKER_ERROR"),
+                        "diagnostic_metadata": getattr(e, "diagnostic_metadata", {}),
+                        "prompt": job_data.get("prompt") if 'job_data' in locals() else "",
+                        "disease_state": job_data.get("disease_state") if 'job_data' in locals() else "",
+                        "target_protein": job_data.get("target_protein") if 'job_data' in locals() else "",
+                        "is_encrypted": is_encrypted if 'is_encrypted' in locals() else False,
+                        "consent_token": consent_token if 'consent_token' in locals() else None,
+                        "epsilon": epsilon if 'epsilon' in locals() else 1.0,
+                        "timestamp": time.time()
+                    }
+                    producer.produce(
+                        'designed-peptides',
+                        key=design_id,
+                        value=json.dumps(error_payload)
+                    )
+                    producer.flush()
+                    logger.info(f"Published failure event to 'designed-peptides' for {design_id}")
+                except Exception as pub_err:
+                    logger.error(f"Failed to publish failure event for {design_id}: {pub_err}")
                 
     except KeyboardInterrupt:
         pass
